@@ -1,0 +1,846 @@
+=== Consistency check  N=4 ===
+  re-uCJ  E_jax=-0.39593877  E_sv=-0.39593877  delta=1.67e-16  PASS
+  im-uCJ  E_jax=-0.81650756  E_sv=-0.81650756  delta=1.11e-16  PASS
+  g-uCJ  E_jax=-0.74417415  E_sv=-0.74417415  delta=3.33e-16  PASS
+
+######################################################################
+#  FULL BENCHMARK — M3=ON  (USE_M3=True)
+######################################################################
+
+
+======================================================================
+  run_all  |  N=4  variants=['re', 'im', 'g']  optimizers=['cobyla', 'spsa', 'qnspsa']
+======================================================================
+
+[Lanczos]  N=4  E_exact=-2.00000000  E/site=-0.50000000
+
+[Hamiltonian]  12 terms  n_qubits=4
+  IIXX  +0.250000
+  IIYY  +0.250000
+  IIZZ  +0.250000
+  IXXI  +0.250000
+  IYYI  +0.250000
+  IZZI  +0.250000
+  XXII  +0.250000
+  YYII  +0.250000
+  ZZII  +0.250000
+  XIIX  +0.250000
+  YIIY  +0.250000
+  ZIIZ  +0.250000
+
+  Clifford commuting groups: 2  (vs 3 circuits with naive X/Y/Z split)
+  group 0  n_terms=6
+    IIXX  +0.250000
+    IIYY  +0.250000
+    IIZZ  +0.250000
+    XXII  +0.250000
+    YYII  +0.250000
+    ZZII  +0.250000
+  group 1  n_terms=6
+    IXXI  +0.250000
+    IYYI  +0.250000
+    IZZI  +0.250000
+    XIIX  +0.250000
+    YIIY  +0.250000
+    ZIIZ  +0.250000
+Automatic SR implementation choice:  QGT
+[VMC]  E_rbm=-2.000000  E_exact=-2.000000
+
+──────────────────────────────────────────────────────────────────────
+  JAX L-BFGS  |  re-uCJ  N=4
+──────────────────────────────────────────────────────────────────────
+  [re-uCJ k=1]  E=-2.00000000  |<exact|uCJ>|²=1.000000  nit=18  nfev=21
+[re-uCJ k=1]  E=-2.00000000  |ΔE|=8.8818e-16
+  Converged at k=1.
+
+[re-uCJ]  E_theory=-2.00000000  E_sv=-2.00000000  k_opt=1
+
+[Circuit info: re-uCJ  N=4  k=1]
+  qubits=4  depth=10  total_gates=14
+    cp                   6
+    xx_plus_yy           6
+    x                    2
+
+  [After transpilation → fake_brisbane]
+  qubits=127  depth=159  total_gates=297
+    rz                   140
+    sx                   95
+    ecr                  48
+    x                    14
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 1.00000000
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 1.00000000
+  E_sv (statevector)                           = -2.00000000
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  JAX L-BFGS  |  im-uCJ  N=4
+──────────────────────────────────────────────────────────────────────
+  [im-uCJ k=1]  E=-1.49660896  |<exact|uCJ>|²=0.499007  nit=18  nfev=28
+  [im-uCJ k=1]  E=-1.49660896  |<exact|uCJ>|²=0.499007  nit=18  nfev=27
+  [im-uCJ k=1]  E=-1.49660896  |<exact|uCJ>|²=0.499007  nit=24  nfev=41
+[im-uCJ k=1]  E=-1.49660896  |ΔE|=5.0339e-01
+  [im-uCJ k=2]  E=-2.00000000  |<exact|uCJ>|²=1.000000  nit=38  nfev=43
+[im-uCJ k=2]  E=-2.00000000  |ΔE|=4.2188e-15
+  Converged at k=2.
+
+[im-uCJ]  E_theory=-2.00000000  E_sv=-2.00000000  k_opt=2
+
+[Circuit info: im-uCJ  N=4  k=2]
+  qubits=4  depth=18  total_gates=26
+    cp                   12
+    xx_plus_yy           12
+    x                    2
+
+  [After transpilation → fake_brisbane]
+  qubits=127  depth=302  total_gates=474
+    rz                   221
+    sx                   156
+    ecr                  75
+    x                    22
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 1.00000000
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 1.00000000
+  E_sv (statevector)                           = -2.00000000
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  JAX L-BFGS  |  g-uCJ  N=4
+──────────────────────────────────────────────────────────────────────
+  [g-uCJ k=1]  E=-2.00000000  |<exact|uCJ>|²=1.000000  nit=19  nfev=23
+[g-uCJ k=1]  E=-2.00000000  |ΔE|=0.0000e+00
+  Converged at k=1.
+
+[g-uCJ]  E_theory=-2.00000000  E_sv=-2.00000000  k_opt=1
+
+[Circuit info: g-uCJ  N=4  k=1]
+  qubits=4  depth=14  total_gates=20
+    xx_plus_yy           12
+    cp                   6
+    x                    2
+
+  [After transpilation → fake_brisbane]
+  qubits=127  depth=247  total_gates=438
+    rz                   200
+    sx                   148
+    ecr                  75
+    x                    15
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 1.00000000
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 1.00000000
+  E_sv (statevector)                           = -2.00000000
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  re-uCJ  ×  COBYLA  N=4
+──────────────────────────────────────────────────────────────────────
+[Shots]  N=4  n_groups=2  epsilon=0.01  group_variances=['0.3750', '0.3750']  shots_needed=3750  shots=3750
+  [CircuitCache]  2 commuting groups (was 3 with X/Y/Z split):
+    group 0  n_terms=6
+    group 1  n_terms=6
+  [M3]  calibrating readout mitigation  qubits=(0, 1, 2, 3)  shots=8192
+  [M3]  calibration done  method=direct
+  E_noisy_init=-0.996653  (noise penalty=+1.0033)
+[COBYLA]  best_E=-1.04543070
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.82101181
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.82101181
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  re-uCJ  ×  SPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.983348  (noise penalty=+1.0167)
+  [SPSA    0]  E_mid=-0.940220  best=-0.940220  a_k=7.95e-02  c_k=1.00e-01
+  [SPSA   10]  E_mid=-1.017823  best=-1.028009  a_k=6.72e-02  c_k=7.85e-02
+  [SPSA   20]  E_mid=-1.027935  best=-1.050294  a_k=5.89e-02  c_k=7.35e-02
+  [SPSA   30]  E_mid=-1.023388  best=-1.050294  a_k=5.29e-02  c_k=7.07e-02
+  [SPSA   40]  E_mid=-1.035527  best=-1.059997  a_k=4.83e-02  c_k=6.87e-02
+  [SPSA   50]  E_mid=-1.030134  best=-1.064804  a_k=4.46e-02  c_k=6.72e-02
+  [SPSA   60]  E_mid=-1.014066  best=-1.067686  a_k=4.16e-02  c_k=6.60e-02
+  [SPSA   70]  E_mid=-1.025840  best=-1.067686  a_k=3.90e-02  c_k=6.50e-02
+  [SPSA   80]  E_mid=-1.034751  best=-1.075704  a_k=3.69e-02  c_k=6.42e-02
+  [SPSA   90]  E_mid=-1.020617  best=-1.075704  a_k=3.50e-02  c_k=6.34e-02
+  [SPSA  100]  E_mid=-1.037672  best=-1.079060  a_k=3.34e-02  c_k=6.27e-02
+  [SPSA  110]  E_mid=-1.033108  best=-1.079060  a_k=3.19e-02  c_k=6.21e-02
+  [SPSA  120]  E_mid=-1.039461  best=-1.079060  a_k=3.06e-02  c_k=6.16e-02
+  [SPSA]  early stop at k=129 (no improvement for 30 steps)
+[SPSA]  best_E=-1.07906016  steps=130  evals=260
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.95359450
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.95359450
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  re-uCJ  ×  QNSPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.994657  (noise penalty=+1.0053)
+  [QNSPSA    0]  E_mid=-0.942319  best=-0.942319
+  [QNSPSA   10]  E_mid=-0.369916  best=-0.942319
+  [QNSPSA   20]  E_mid=-0.314499  best=-0.942319
+  [QNSPSA   30]  E_mid=-0.101399  best=-0.942319
+  [QNSPSA   40]  E_mid=0.216027  best=-0.942319
+  [QNSPSA   50]  E_mid=-0.212714  best=-0.942319
+  [QNSPSA   60]  E_mid=-0.825263  best=-0.942319
+  [QNSPSA   70]  E_mid=-0.144968  best=-0.942319
+  [QNSPSA   80]  E_mid=0.159833  best=-0.942319
+  [QNSPSA   90]  E_mid=0.058160  best=-0.942319
+  [QNSPSA  100]  E_mid=0.188357  best=-0.942319
+  [QNSPSA  110]  E_mid=0.306043  best=-0.942319
+  [QNSPSA  120]  E_mid=0.255547  best=-0.942319
+  [QNSPSA  130]  E_mid=0.363705  best=-0.942319
+  [QNSPSA  140]  E_mid=0.283057  best=-0.942319
+  [QNSPSA  150]  E_mid=-0.514985  best=-0.942319
+  [QNSPSA  160]  E_mid=-0.196962  best=-0.942319
+  [QNSPSA  170]  E_mid=0.114009  best=-0.942319
+  [QNSPSA  180]  E_mid=-0.427621  best=-0.942319
+  [QNSPSA  190]  E_mid=-0.127367  best=-0.942319
+  [QNSPSA  200]  E_mid=-0.008436  best=-0.942319
+  [QNSPSA  210]  E_mid=-0.542431  best=-0.942319
+  [QNSPSA  220]  E_mid=-0.182456  best=-0.942319
+  [QNSPSA  230]  E_mid=-0.847431  best=-0.942319
+  [QNSPSA  240]  E_mid=-0.676435  best=-0.942319
+  [QNSPSA  250]  E_mid=-0.214807  best=-0.942319
+  [QNSPSA  260]  E_mid=-0.318617  best=-0.942319
+  [QNSPSA  270]  E_mid=-0.316255  best=-0.942319
+  [QNSPSA  280]  E_mid=-0.053064  best=-0.942319
+  [QNSPSA  290]  E_mid=-0.031206  best=-0.942319
+[QNSPSA]  best_E=-0.94231943
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.00018600
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.00018600
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  im-uCJ  ×  COBYLA  N=4
+──────────────────────────────────────────────────────────────────────
+[Shots]  N=4  n_groups=2  epsilon=0.01  group_variances=['0.3750', '0.3750']  shots_needed=3750  shots=3750
+  [CircuitCache]  2 commuting groups (was 3 with X/Y/Z split):
+    group 0  n_terms=6
+    group 1  n_terms=6
+  E_noisy_init=-0.691656  (noise penalty=+1.3083)
+[COBYLA]  best_E=-0.73796767
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.99721060
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.99721060
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  im-uCJ  ×  SPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.660667  (noise penalty=+1.3393)
+  [SPSA    0]  E_mid=-0.680058  best=-0.680058  a_k=7.95e-02  c_k=1.00e-01
+  [SPSA   10]  E_mid=-0.662634  best=-0.684730  a_k=6.72e-02  c_k=7.85e-02
+  [SPSA   20]  E_mid=-0.696173  best=-0.712488  a_k=5.89e-02  c_k=7.35e-02
+  [SPSA   30]  E_mid=-0.690745  best=-0.727782  a_k=5.29e-02  c_k=7.07e-02
+  [SPSA   40]  E_mid=-0.683612  best=-0.738305  a_k=4.83e-02  c_k=6.87e-02
+  [SPSA   50]  E_mid=-0.732088  best=-0.748050  a_k=4.46e-02  c_k=6.72e-02
+  [SPSA   60]  E_mid=-0.699030  best=-0.748050  a_k=4.16e-02  c_k=6.60e-02
+  [SPSA   70]  E_mid=-0.696725  best=-0.748050  a_k=3.90e-02  c_k=6.50e-02
+  [SPSA]  early stop at k=72 (no improvement for 30 steps)
+[SPSA]  best_E=-0.74805002  steps=73  evals=146
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.95295628
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.95295628
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  im-uCJ  ×  QNSPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.683849  (noise penalty=+1.3162)
+  [QNSPSA    0]  E_mid=-0.668179  best=-0.668179
+  [QNSPSA   10]  E_mid=0.017010  best=-0.668179
+  [QNSPSA   20]  E_mid=-0.254986  best=-0.668179
+  [QNSPSA   30]  E_mid=0.088618  best=-0.668179
+  [QNSPSA   40]  E_mid=-0.138923  best=-0.668179
+  [QNSPSA   50]  E_mid=-0.056451  best=-0.668179
+  [QNSPSA   60]  E_mid=-0.271170  best=-0.668179
+  [QNSPSA   70]  E_mid=-0.054078  best=-0.668179
+  [QNSPSA   80]  E_mid=-0.290567  best=-0.668179
+  [QNSPSA   90]  E_mid=-0.255652  best=-0.668179
+  [QNSPSA  100]  E_mid=-0.267071  best=-0.668179
+  [QNSPSA  110]  E_mid=-0.051189  best=-0.668179
+  [QNSPSA  120]  E_mid=-0.316315  best=-0.668179
+  [QNSPSA  130]  E_mid=-0.092263  best=-0.668179
+  [QNSPSA  140]  E_mid=-0.289558  best=-0.668179
+  [QNSPSA  150]  E_mid=-0.086947  best=-0.668179
+  [QNSPSA  160]  E_mid=-0.046891  best=-0.668179
+  [QNSPSA  170]  E_mid=-0.200743  best=-0.668179
+  [QNSPSA  180]  E_mid=-0.210919  best=-0.668179
+  [QNSPSA  190]  E_mid=-0.472880  best=-0.668179
+  [QNSPSA  200]  E_mid=-0.189420  best=-0.668179
+  [QNSPSA  210]  E_mid=-0.338510  best=-0.668179
+  [QNSPSA  220]  E_mid=-0.141016  best=-0.668179
+  [QNSPSA  230]  E_mid=-0.153231  best=-0.668179
+  [QNSPSA  240]  E_mid=-0.106900  best=-0.668179
+  [QNSPSA  250]  E_mid=-0.174958  best=-0.668179
+  [QNSPSA  260]  E_mid=-0.099400  best=-0.668179
+  [QNSPSA  270]  E_mid=-0.154347  best=-0.668179
+  [QNSPSA  280]  E_mid=-0.145335  best=-0.668179
+  [QNSPSA  290]  E_mid=-0.248813  best=-0.668179
+[QNSPSA]  best_E=-0.66817945
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.10006248
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.10006248
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  g-uCJ  ×  COBYLA  N=4
+──────────────────────────────────────────────────────────────────────
+[Shots]  N=4  n_groups=2  epsilon=0.01  group_variances=['0.3750', '0.3750']  shots_needed=3750  shots=3750
+  [CircuitCache]  2 commuting groups (was 3 with X/Y/Z split):
+    group 0  n_terms=6
+    group 1  n_terms=6
+  E_noisy_init=-0.877118  (noise penalty=+1.1229)
+[COBYLA]  best_E=-0.92946667
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.92256815
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.92256815
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  g-uCJ  ×  SPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.881200  (noise penalty=+1.1188)
+  [SPSA    0]  E_mid=-0.799845  best=-0.799845  a_k=7.95e-02  c_k=1.00e-01
+  [SPSA   10]  E_mid=-0.870934  best=-0.899911  a_k=6.72e-02  c_k=7.85e-02
+  [SPSA   20]  E_mid=-0.886919  best=-0.899911  a_k=5.89e-02  c_k=7.35e-02
+  [SPSA   30]  E_mid=-0.891118  best=-0.899911  a_k=5.29e-02  c_k=7.07e-02
+  [SPSA]  early stop at k=36 (no improvement for 30 steps)
+[SPSA]  best_E=-0.89991117  steps=37  evals=74
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.99214762
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.99214762
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  g-uCJ  ×  QNSPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.869941  (noise penalty=+1.1301)
+  [QNSPSA    0]  E_mid=-0.806616  best=-0.806616
+  [QNSPSA   10]  E_mid=-0.808838  best=-0.862578
+  [QNSPSA   20]  E_mid=0.112403  best=-0.862578
+  [QNSPSA   30]  E_mid=0.184780  best=-0.862578
+  [QNSPSA   40]  E_mid=0.125556  best=-0.862578
+  [QNSPSA   50]  E_mid=-0.112433  best=-0.862578
+  [QNSPSA   60]  E_mid=-0.380858  best=-0.862578
+  [QNSPSA   70]  E_mid=0.295856  best=-0.862578
+  [QNSPSA   80]  E_mid=-0.318743  best=-0.862578
+  [QNSPSA   90]  E_mid=-0.310050  best=-0.862578
+  [QNSPSA  100]  E_mid=-0.118219  best=-0.862578
+  [QNSPSA  110]  E_mid=-0.215189  best=-0.862578
+  [QNSPSA  120]  E_mid=-0.246854  best=-0.862578
+  [QNSPSA  130]  E_mid=-0.097113  best=-0.862578
+  [QNSPSA  140]  E_mid=-0.027915  best=-0.862578
+  [QNSPSA  150]  E_mid=-0.394945  best=-0.862578
+  [QNSPSA  160]  E_mid=-0.358183  best=-0.862578
+  [QNSPSA  170]  E_mid=-0.355211  best=-0.862578
+  [QNSPSA  180]  E_mid=-0.313147  best=-0.862578
+  [QNSPSA  190]  E_mid=-0.338061  best=-0.862578
+  [QNSPSA  200]  E_mid=-0.335596  best=-0.862578
+  [QNSPSA  210]  E_mid=-0.283914  best=-0.862578
+  [QNSPSA  220]  E_mid=-0.451637  best=-0.862578
+  [QNSPSA  230]  E_mid=-0.314528  best=-0.862578
+  [QNSPSA  240]  E_mid=-0.098529  best=-0.862578
+  [QNSPSA  250]  E_mid=-0.094319  best=-0.862578
+  [QNSPSA  260]  E_mid=-0.379295  best=-0.862578
+  [QNSPSA  270]  E_mid=-0.303038  best=-0.862578
+  [QNSPSA  280]  E_mid=-0.084901  best=-0.862578
+  [QNSPSA  290]  E_mid=-0.134542  best=-0.862578
+[QNSPSA]  best_E=-0.86257802
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.97062216
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.97062216
+  JAX/circuit consistent: YES
+
+========================================================================================================================
+  SUMMARY  |  N=4  E_exact=-2.000000  (3 variants × 3 optimizers = 9 circuits)
+========================================================================================================================
+  metric                          re/cob    re/sps    re/qns    im/cob    im/sps    im/qns     g/cob     g/sps     g/qns
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  E_exact                      -2.000000 -2.000000 -2.000000 -2.000000 -2.000000 -2.000000 -2.000000 -2.000000 -2.000000
+  E_theory (re-uCJ)            -2.000000 -2.000000 -2.000000       nan       nan       nan       nan       nan       nan
+  E_sv_theory (re-uCJ)         -2.000000 -2.000000 -2.000000       nan       nan       nan       nan       nan       nan
+  overlap_theory (re-uCJ)       1.000000  1.000000  1.000000       nan       nan       nan       nan       nan       nan
+  E_theory (im-uCJ)                  nan       nan       nan -2.000000 -2.000000 -2.000000       nan       nan       nan
+  E_sv_theory (im-uCJ)               nan       nan       nan -2.000000 -2.000000 -2.000000       nan       nan       nan
+  overlap_theory (im-uCJ)            nan       nan       nan  1.000000  1.000000  1.000000       nan       nan       nan
+  E_theory (g-uCJ)                   nan       nan       nan       nan       nan       nan -2.000000 -2.000000 -2.000000
+  E_sv_theory (g-uCJ)                nan       nan       nan       nan       nan       nan -2.000000 -2.000000 -2.000000
+  overlap_theory (g-uCJ)             nan       nan       nan       nan       nan       nan  1.000000  1.000000  1.000000
+  E_noisy_init (re-uCJ)        -0.996653 -0.996653 -0.996653       nan       nan       nan       nan       nan       nan
+  E_noisy_init (im-uCJ)              nan       nan       nan -0.691656 -0.691656 -0.691656       nan       nan       nan
+  E_noisy_init (g-uCJ)               nan       nan       nan       nan       nan       nan -0.877118 -0.877118 -0.877118
+  E_hw_opt (noisy)             -1.045431 -1.079060 -0.942319 -0.737968 -0.748050 -0.668179 -0.929467 -0.899911 -0.862578
+  E_sv_hw (noiseless)          -1.630378 -1.883566 -0.061505 -1.994160 -1.877625  0.000167 -1.844751 -1.980684 -1.937628
+  gap (hw_opt - theory)         0.954569  0.920940  1.057681  1.262032  1.251950  1.331821  1.070533  1.100089  1.137422
+  overlap_hw (JAX)              0.821012  0.953595  0.000186  0.997211  0.952956  0.100062  0.922568  0.992148  0.970622
+========================================================================================================================
+
+
+######################################################################
+#  FULL BENCHMARK — M3=OFF  (USE_M3=False)
+######################################################################
+
+
+======================================================================
+  run_all  |  N=4  variants=['re', 'im', 'g']  optimizers=['cobyla', 'spsa', 'qnspsa']
+======================================================================
+
+[Lanczos]  N=4  E_exact=-2.00000000  E/site=-0.50000000
+
+[Hamiltonian]  12 terms  n_qubits=4
+  IIXX  +0.250000
+  IIYY  +0.250000
+  IIZZ  +0.250000
+  IXXI  +0.250000
+  IYYI  +0.250000
+  IZZI  +0.250000
+  XXII  +0.250000
+  YYII  +0.250000
+  ZZII  +0.250000
+  XIIX  +0.250000
+  YIIY  +0.250000
+  ZIIZ  +0.250000
+
+  Clifford commuting groups: 2  (vs 3 circuits with naive X/Y/Z split)
+  group 0  n_terms=6
+    IIXX  +0.250000
+    IIYY  +0.250000
+    IIZZ  +0.250000
+    XXII  +0.250000
+    YYII  +0.250000
+    ZZII  +0.250000
+  group 1  n_terms=6
+    IXXI  +0.250000
+    IYYI  +0.250000
+    IZZI  +0.250000
+    XIIX  +0.250000
+    YIIY  +0.250000
+    ZIIZ  +0.250000
+Automatic SR implementation choice:  QGT
+[VMC]  E_rbm=-2.000000  E_exact=-2.000000
+
+──────────────────────────────────────────────────────────────────────
+  JAX L-BFGS  |  re-uCJ  N=4
+──────────────────────────────────────────────────────────────────────
+  [re-uCJ k=1]  E=-2.00000000  |<exact|uCJ>|²=1.000000  nit=18  nfev=21
+[re-uCJ k=1]  E=-2.00000000  |ΔE|=1.3323e-15
+  Converged at k=1.
+
+[re-uCJ]  E_theory=-2.00000000  E_sv=-2.00000000  k_opt=1
+
+[Circuit info: re-uCJ  N=4  k=1]
+  qubits=4  depth=10  total_gates=14
+    cp                   6
+    xx_plus_yy           6
+    x                    2
+
+  [After transpilation → fake_brisbane]
+  qubits=127  depth=159  total_gates=297
+    rz                   140
+    sx                   95
+    ecr                  48
+    x                    14
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 1.00000000
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 1.00000000
+  E_sv (statevector)                           = -2.00000000
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  JAX L-BFGS  |  im-uCJ  N=4
+──────────────────────────────────────────────────────────────────────
+  [im-uCJ k=1]  E=-1.49660896  |<exact|uCJ>|²=0.499007  nit=18  nfev=28
+  [im-uCJ k=1]  E=-1.49660896  |<exact|uCJ>|²=0.499007  nit=18  nfev=27
+  [im-uCJ k=1]  E=-1.49660896  |<exact|uCJ>|²=0.499007  nit=24  nfev=41
+[im-uCJ k=1]  E=-1.49660896  |ΔE|=5.0339e-01
+  [im-uCJ k=2]  E=-2.00000000  |<exact|uCJ>|²=1.000000  nit=38  nfev=43
+[im-uCJ k=2]  E=-2.00000000  |ΔE|=4.6629e-15
+  Converged at k=2.
+
+[im-uCJ]  E_theory=-2.00000000  E_sv=-2.00000000  k_opt=2
+
+[Circuit info: im-uCJ  N=4  k=2]
+  qubits=4  depth=18  total_gates=26
+    cp                   12
+    xx_plus_yy           12
+    x                    2
+
+  [After transpilation → fake_brisbane]
+  qubits=127  depth=302  total_gates=474
+    rz                   221
+    sx                   156
+    ecr                  75
+    x                    22
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 1.00000000
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 1.00000000
+  E_sv (statevector)                           = -2.00000000
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  JAX L-BFGS  |  g-uCJ  N=4
+──────────────────────────────────────────────────────────────────────
+  [g-uCJ k=1]  E=-2.00000000  |<exact|uCJ>|²=1.000000  nit=19  nfev=23
+[g-uCJ k=1]  E=-2.00000000  |ΔE|=4.4409e-16
+  Converged at k=1.
+
+[g-uCJ]  E_theory=-2.00000000  E_sv=-2.00000000  k_opt=1
+
+[Circuit info: g-uCJ  N=4  k=1]
+  qubits=4  depth=14  total_gates=20
+    xx_plus_yy           12
+    cp                   6
+    x                    2
+
+  [After transpilation → fake_brisbane]
+  qubits=127  depth=247  total_gates=438
+    rz                   200
+    sx                   148
+    ecr                  75
+    x                    15
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 1.00000000
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 1.00000000
+  E_sv (statevector)                           = -2.00000000
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  re-uCJ  ×  COBYLA  N=4
+──────────────────────────────────────────────────────────────────────
+[Shots]  N=4  n_groups=2  epsilon=0.01  group_variances=['0.3750', '0.3750']  shots_needed=3750  shots=3750
+  [CircuitCache]  2 commuting groups (was 3 with X/Y/Z split):
+    group 0  n_terms=6
+    group 1  n_terms=6
+  E_noisy_init=-0.920133  (noise penalty=+1.0799)
+[COBYLA]  best_E=-0.98560000
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 1.00000000
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 1.00000000
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  re-uCJ  ×  SPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.949733  (noise penalty=+1.0503)
+  [SPSA    0]  E_mid=-0.884400  best=-0.884400  a_k=7.95e-02  c_k=1.00e-01
+  [SPSA   10]  E_mid=-0.948867  best=-1.000867  a_k=6.72e-02  c_k=7.85e-02
+  [SPSA   20]  E_mid=-0.988067  best=-1.000867  a_k=5.89e-02  c_k=7.35e-02
+  [SPSA   30]  E_mid=-0.977067  best=-1.000867  a_k=5.29e-02  c_k=7.07e-02
+  [SPSA   40]  E_mid=-0.969200  best=-1.001267  a_k=4.83e-02  c_k=6.87e-02
+  [SPSA   50]  E_mid=-0.990867  best=-1.001267  a_k=4.46e-02  c_k=6.72e-02
+  [SPSA   60]  E_mid=-0.960267  best=-1.001267  a_k=4.16e-02  c_k=6.60e-02
+  [SPSA]  early stop at k=62 (no improvement for 30 steps)
+[SPSA]  best_E=-1.00126667  steps=63  evals=126
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.95033232
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.95033232
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  re-uCJ  ×  QNSPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.944133  (noise penalty=+1.0559)
+  [QNSPSA    0]  E_mid=-0.912467  best=-0.912467
+  [QNSPSA   10]  E_mid=-0.347133  best=-0.912467
+  [QNSPSA   20]  E_mid=-0.561733  best=-0.912467
+  [QNSPSA   30]  E_mid=-0.285400  best=-0.912467
+  [QNSPSA   40]  E_mid=-0.381133  best=-0.912467
+  [QNSPSA   50]  E_mid=-0.675133  best=-0.912467
+  [QNSPSA   60]  E_mid=0.047000  best=-0.912467
+  [QNSPSA   70]  E_mid=-0.080733  best=-0.912467
+  [QNSPSA   80]  E_mid=-0.777867  best=-0.912467
+  [QNSPSA   90]  E_mid=-0.251800  best=-0.912467
+  [QNSPSA  100]  E_mid=-0.560067  best=-0.912467
+  [QNSPSA  110]  E_mid=-0.388400  best=-0.912467
+  [QNSPSA  120]  E_mid=-0.299467  best=-0.912467
+  [QNSPSA  130]  E_mid=-0.127800  best=-0.912467
+  [QNSPSA  140]  E_mid=-0.039400  best=-0.912467
+  [QNSPSA  150]  E_mid=-0.097267  best=-0.912467
+  [QNSPSA  160]  E_mid=-0.019933  best=-0.912467
+  [QNSPSA  170]  E_mid=-0.035933  best=-0.912467
+  [QNSPSA  180]  E_mid=-0.028933  best=-0.912467
+  [QNSPSA  190]  E_mid=-0.063667  best=-0.912467
+  [QNSPSA  200]  E_mid=-0.030467  best=-0.912467
+  [QNSPSA  210]  E_mid=-0.166267  best=-0.912467
+  [QNSPSA  220]  E_mid=0.212000  best=-0.912467
+  [QNSPSA  230]  E_mid=-0.487000  best=-0.912467
+  [QNSPSA  240]  E_mid=-0.094733  best=-0.912467
+  [QNSPSA  250]  E_mid=-0.294800  best=-0.912467
+  [QNSPSA  260]  E_mid=0.040267  best=-0.912467
+  [QNSPSA  270]  E_mid=-0.005733  best=-0.912467
+  [QNSPSA  280]  E_mid=-0.068933  best=-0.912467
+  [QNSPSA  290]  E_mid=0.293800  best=-0.912467
+[QNSPSA]  best_E=-0.91246667
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.32334489
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.32334489
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  im-uCJ  ×  COBYLA  N=4
+──────────────────────────────────────────────────────────────────────
+[Shots]  N=4  n_groups=2  epsilon=0.01  group_variances=['0.3750', '0.3750']  shots_needed=3750  shots=3750
+  [CircuitCache]  2 commuting groups (was 3 with X/Y/Z split):
+    group 0  n_terms=6
+    group 1  n_terms=6
+  E_noisy_init=-0.658933  (noise penalty=+1.3411)
+[COBYLA]  best_E=-0.69413333
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.99460838
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.99460838
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  im-uCJ  ×  SPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.618533  (noise penalty=+1.3815)
+  [SPSA    0]  E_mid=-0.629867  best=-0.629867  a_k=7.95e-02  c_k=1.00e-01
+  [SPSA   10]  E_mid=-0.632933  best=-0.637800  a_k=6.72e-02  c_k=7.85e-02
+  [SPSA   20]  E_mid=-0.653933  best=-0.673800  a_k=5.89e-02  c_k=7.35e-02
+  [SPSA   30]  E_mid=-0.677467  best=-0.677467  a_k=5.29e-02  c_k=7.07e-02
+  [SPSA   40]  E_mid=-0.652400  best=-0.692333  a_k=4.83e-02  c_k=6.87e-02
+  [SPSA   50]  E_mid=-0.665867  best=-0.692333  a_k=4.46e-02  c_k=6.72e-02
+  [SPSA   60]  E_mid=-0.646600  best=-0.692333  a_k=4.16e-02  c_k=6.60e-02
+  [SPSA   70]  E_mid=-0.653333  best=-0.696467  a_k=3.90e-02  c_k=6.50e-02
+  [SPSA   80]  E_mid=-0.678533  best=-0.696467  a_k=3.69e-02  c_k=6.42e-02
+  [SPSA   90]  E_mid=-0.657333  best=-0.699200  a_k=3.50e-02  c_k=6.34e-02
+  [SPSA  100]  E_mid=-0.673467  best=-0.699200  a_k=3.34e-02  c_k=6.27e-02
+  [SPSA  110]  E_mid=-0.692467  best=-0.699200  a_k=3.19e-02  c_k=6.21e-02
+  [SPSA]  early stop at k=116 (no improvement for 30 steps)
+[SPSA]  best_E=-0.69920000  steps=117  evals=234
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.90987863
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.90987863
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  im-uCJ  ×  QNSPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.628267  (noise penalty=+1.3717)
+  [QNSPSA    0]  E_mid=-0.631333  best=-0.631333
+  [QNSPSA   10]  E_mid=-0.008400  best=-0.631333
+  [QNSPSA   20]  E_mid=-0.158267  best=-0.631333
+  [QNSPSA   30]  E_mid=-0.282067  best=-0.631333
+  [QNSPSA   40]  E_mid=-0.140467  best=-0.631333
+  [QNSPSA   50]  E_mid=-0.235133  best=-0.631333
+  [QNSPSA   60]  E_mid=0.072200  best=-0.631333
+  [QNSPSA   70]  E_mid=-0.053733  best=-0.631333
+  [QNSPSA   80]  E_mid=-0.355133  best=-0.631333
+  [QNSPSA   90]  E_mid=-0.381067  best=-0.631333
+  [QNSPSA  100]  E_mid=-0.086867  best=-0.631333
+  [QNSPSA  110]  E_mid=-0.106867  best=-0.631333
+  [QNSPSA  120]  E_mid=-0.155067  best=-0.631333
+  [QNSPSA  130]  E_mid=-0.170000  best=-0.631333
+  [QNSPSA  140]  E_mid=-0.189467  best=-0.631333
+  [QNSPSA  150]  E_mid=-0.268333  best=-0.631333
+  [QNSPSA  160]  E_mid=-0.332600  best=-0.631333
+  [QNSPSA  170]  E_mid=-0.192400  best=-0.631333
+  [QNSPSA  180]  E_mid=-0.132333  best=-0.631333
+  [QNSPSA  190]  E_mid=0.030267  best=-0.631333
+  [QNSPSA  200]  E_mid=-0.156133  best=-0.631333
+  [QNSPSA  210]  E_mid=-0.309933  best=-0.631333
+  [QNSPSA  220]  E_mid=-0.320733  best=-0.631333
+  [QNSPSA  230]  E_mid=-0.298733  best=-0.631333
+  [QNSPSA  240]  E_mid=-0.288200  best=-0.631333
+  [QNSPSA  250]  E_mid=-0.330733  best=-0.631333
+  [QNSPSA  260]  E_mid=-0.240133  best=-0.631333
+  [QNSPSA  270]  E_mid=-0.349600  best=-0.631333
+  [QNSPSA  280]  E_mid=-0.149333  best=-0.631333
+  [QNSPSA  290]  E_mid=-0.120933  best=-0.631333
+[QNSPSA]  best_E=-0.63133333
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.22757687
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.22757687
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  g-uCJ  ×  COBYLA  N=4
+──────────────────────────────────────────────────────────────────────
+[Shots]  N=4  n_groups=2  epsilon=0.01  group_variances=['0.3750', '0.3750']  shots_needed=3750  shots=3750
+  [CircuitCache]  2 commuting groups (was 3 with X/Y/Z split):
+    group 0  n_terms=6
+    group 1  n_terms=6
+  E_noisy_init=-0.801067  (noise penalty=+1.1989)
+[COBYLA]  best_E=-0.84933333
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.98083650
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.98083650
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  g-uCJ  ×  SPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.836000  (noise penalty=+1.1640)
+  [SPSA    0]  E_mid=-0.758467  best=-0.758467  a_k=7.95e-02  c_k=1.00e-01
+  [SPSA   10]  E_mid=-0.824800  best=-0.829533  a_k=6.72e-02  c_k=7.85e-02
+  [SPSA   20]  E_mid=-0.810000  best=-0.831000  a_k=5.89e-02  c_k=7.35e-02
+  [SPSA   30]  E_mid=-0.827533  best=-0.848533  a_k=5.29e-02  c_k=7.07e-02
+  [SPSA   40]  E_mid=-0.811733  best=-0.848533  a_k=4.83e-02  c_k=6.87e-02
+  [SPSA   50]  E_mid=-0.839933  best=-0.859800  a_k=4.46e-02  c_k=6.72e-02
+  [SPSA   60]  E_mid=-0.838467  best=-0.859800  a_k=4.16e-02  c_k=6.60e-02
+  [SPSA   70]  E_mid=-0.839000  best=-0.864000  a_k=3.90e-02  c_k=6.50e-02
+  [SPSA   80]  E_mid=-0.843400  best=-0.864000  a_k=3.69e-02  c_k=6.42e-02
+  [SPSA   90]  E_mid=-0.822667  best=-0.864000  a_k=3.50e-02  c_k=6.34e-02
+  [SPSA]  early stop at k=96 (no improvement for 30 steps)
+[SPSA]  best_E=-0.86400000  steps=97  evals=194
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.96478365
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.96478365
+  JAX/circuit consistent: YES
+
+──────────────────────────────────────────────────────────────────────
+  Hardware  |  g-uCJ  ×  QNSPSA  N=4
+──────────────────────────────────────────────────────────────────────
+  E_noisy_init=-0.796133  (noise penalty=+1.2039)
+  [QNSPSA    0]  E_mid=-0.776733  best=-0.776733
+  [QNSPSA   10]  E_mid=-0.747400  best=-0.820133
+  [QNSPSA   20]  E_mid=-0.383600  best=-0.820133
+  [QNSPSA   30]  E_mid=-0.072200  best=-0.820133
+  [QNSPSA   40]  E_mid=-0.347867  best=-0.820133
+  [QNSPSA   50]  E_mid=-0.295267  best=-0.820133
+  [QNSPSA   60]  E_mid=-0.281333  best=-0.820133
+  [QNSPSA   70]  E_mid=-0.221800  best=-0.820133
+  [QNSPSA   80]  E_mid=-0.096267  best=-0.820133
+  [QNSPSA   90]  E_mid=0.042467  best=-0.820133
+  [QNSPSA  100]  E_mid=-0.293067  best=-0.820133
+  [QNSPSA  110]  E_mid=-0.240600  best=-0.820133
+  [QNSPSA  120]  E_mid=-0.198200  best=-0.820133
+  [QNSPSA  130]  E_mid=-0.097200  best=-0.820133
+  [QNSPSA  140]  E_mid=-0.239000  best=-0.820133
+  [QNSPSA  150]  E_mid=-0.251733  best=-0.820133
+  [QNSPSA  160]  E_mid=-0.316733  best=-0.820133
+  [QNSPSA  170]  E_mid=-0.074067  best=-0.820133
+  [QNSPSA  180]  E_mid=-0.352333  best=-0.820133
+  [QNSPSA  190]  E_mid=-0.197667  best=-0.820133
+  [QNSPSA  200]  E_mid=-0.167333  best=-0.820133
+  [QNSPSA  210]  E_mid=-0.065733  best=-0.820133
+  [QNSPSA  220]  E_mid=-0.270467  best=-0.820133
+  [QNSPSA  230]  E_mid=0.025267  best=-0.820133
+  [QNSPSA  240]  E_mid=-0.373333  best=-0.820133
+  [QNSPSA  250]  E_mid=-0.225933  best=-0.820133
+  [QNSPSA  260]  E_mid=-0.041067  best=-0.820133
+  [QNSPSA  270]  E_mid=-0.381200  best=-0.820133
+  [QNSPSA  280]  E_mid=-0.317933  best=-0.820133
+  [QNSPSA  290]  E_mid=-0.373933  best=-0.820133
+[QNSPSA]  best_E=-0.82013333
+
+[State overlap]
+  overlap_jax     (JAX wavefunction vs Lanczos) = 0.98869620
+  overlap_circuit (Qiskit SV    vs Lanczos)     = 0.98869620
+  JAX/circuit consistent: YES
+
+========================================================================================================================
+  SUMMARY  |  N=4  E_exact=-2.000000  (3 variants × 3 optimizers = 9 circuits)
+========================================================================================================================
+  metric                          re/cob    re/sps    re/qns    im/cob    im/sps    im/qns     g/cob     g/sps     g/qns
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  E_exact                      -2.000000 -2.000000 -2.000000 -2.000000 -2.000000 -2.000000 -2.000000 -2.000000 -2.000000
+  E_theory (re-uCJ)            -2.000000 -2.000000 -2.000000       nan       nan       nan       nan       nan       nan
+  E_sv_theory (re-uCJ)         -2.000000 -2.000000 -2.000000       nan       nan       nan       nan       nan       nan
+  overlap_theory (re-uCJ)       1.000000  1.000000  1.000000       nan       nan       nan       nan       nan       nan
+  E_theory (im-uCJ)                  nan       nan       nan -2.000000 -2.000000 -2.000000       nan       nan       nan
+  E_sv_theory (im-uCJ)               nan       nan       nan -2.000000 -2.000000 -2.000000       nan       nan       nan
+  overlap_theory (im-uCJ)            nan       nan       nan  1.000000  1.000000  1.000000       nan       nan       nan
+  E_theory (g-uCJ)                   nan       nan       nan       nan       nan       nan -2.000000 -2.000000 -2.000000
+  E_sv_theory (g-uCJ)                nan       nan       nan       nan       nan       nan -2.000000 -2.000000 -2.000000
+  overlap_theory (g-uCJ)             nan       nan       nan       nan       nan       nan  1.000000  1.000000  1.000000
+  E_noisy_init (re-uCJ)        -0.920133 -0.920133 -0.920133       nan       nan       nan       nan       nan       nan
+  E_noisy_init (im-uCJ)              nan       nan       nan -0.658933 -0.658933 -0.658933       nan       nan       nan
+  E_noisy_init (g-uCJ)               nan       nan       nan       nan       nan       nan -0.801067 -0.801067 -0.801067
+  E_hw_opt (noisy)             -0.985600 -1.001267 -0.912467 -0.694133 -0.699200 -0.631333 -0.849333 -0.864000 -0.820133
+  E_sv_hw (noiseless)          -2.000000 -1.881600 -1.085292 -1.987251 -1.787083 -0.621775 -1.942700 -1.914589 -1.978910
+  gap (hw_opt - theory)         1.014400  0.998733  1.087533  1.305867  1.300800  1.368667  1.150667  1.136000  1.179867
+  overlap_hw (JAX)              1.000000  0.950332  0.323345  0.994608  0.909879  0.227577  0.980836  0.964784  0.988696
+========================================================================================================================
+
+
+==========================================================================================================================
+  M3 COMPARISON TABLE  |  N=re  E_exact=-2.000000
+  Columns: re/cob, re/sps, re/qns, im/cob, im/sps, im/qns, g/cob, g/sps, g/qns
+==========================================================================================================================
+
+  ── M3 = ON  (mitigated) ──
+  metric                            re/cob    re/sps    re/qns    im/cob    im/sps    im/qns     g/cob     g/sps     g/qns
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  E_hw_opt                       -1.045431 -1.079060 -0.942319 -0.737968 -0.748050 -0.668179 -0.929467 -0.899911 -0.862578
+  E_sv_hw                        -1.630378 -1.883566 -0.061505 -1.994160 -1.877625  0.000167 -1.844751 -1.980684 -1.937628
+  gap                             0.954569  0.920940  1.057681  1.262032  1.251950  1.331821  1.070533  1.100089  1.137422
+  overlap_hw                      0.821012  0.953595  0.000186  0.997211  0.952956  0.100062  0.922568  0.992148  0.970622
+  E_noisy_init                   -0.996653 -0.983348 -0.994657 -0.691656 -0.660667 -0.683849 -0.877118 -0.881200 -0.869941
+
+  ── M3 = OFF (raw counts) ──
+  metric                            re/cob    re/sps    re/qns    im/cob    im/sps    im/qns     g/cob     g/sps     g/qns
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  E_hw_opt                       -0.985600 -1.001267 -0.912467 -0.694133 -0.699200 -0.631333 -0.849333 -0.864000 -0.820133
+  E_sv_hw                        -2.000000 -1.881600 -1.085292 -1.987251 -1.787083 -0.621775 -1.942700 -1.914589 -1.978910
+  gap                             1.014400  0.998733  1.087533  1.305867  1.300800  1.368667  1.150667  1.136000  1.179867
+  overlap_hw                      1.000000  0.950332  0.323345  0.994608  0.909879  0.227577  0.980836  0.964784  0.988696
+  E_noisy_init                   -0.920133 -0.949733 -0.944133 -0.658933 -0.618533 -0.628267 -0.801067 -0.836000 -0.796133
+
+  ── delta = ON − OFF  (↓ energy better, ↑ overlap better) ──
+  metric                            re/cob    re/sps    re/qns    im/cob    im/sps    im/qns     g/cob     g/sps     g/qns
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  E_hw_opt                        -0.0598↓  -0.0778↓  -0.0299↓  -0.0438↓  -0.0489↓  -0.0368↓  -0.0801↓  -0.0359↓  -0.0424↓
+  E_sv_hw                         +0.3696↑  -0.0020↓  +1.0238↑  -0.0069↓  -0.0905↓  +0.6219↑  +0.0979↑  -0.0661↓  +0.0413↑
+  gap                             -0.0598↓  -0.0778↓  -0.0299↓  -0.0438↓  -0.0489↓  -0.0368↓  -0.0801↓  -0.0359↓  -0.0424↓
+  overlap_hw                      -0.1790↓  +0.0033↑  -0.3232↓  +0.0026↑  +0.0431↑  -0.1275↓  -0.0583↓  +0.0274↑  -0.0181↓
+  E_noisy_init                    -0.0765↓  -0.0336↓  -0.0505↓  -0.0327↓  -0.0421↓  -0.0556↓  -0.0761↓  -0.0452↓  -0.0738↓
+
+  ── Runtime ──
+  M3=ON  total wall time          89m 53.49s
+  M3=OFF total wall time          92m 01.09s
+  M3 overhead                     - 2m 07.60s
+
+==========================================================================================================================
+
+
+======================================================
+  Overall runtime breakdown
+======================================================
+  consistency_check                      0m 01.50s
+  jax_lbfgs re N=4                       0m 00.41s
+  sv_noiseless re N=4                    0m 00.00s
+  jax_lbfgs im N=4                       0m 01.86s
+  sv_noiseless im N=4                    0m 00.00s
+  jax_lbfgs g N=4                        0m 00.64s
+  sv_noiseless g N=4                     0m 00.00s
+  hw_opt re cobyla N=4                   1m 20.23s
+  hw_opt re spsa N=4                     1m 43.19s
+  hw_opt re qnspsa N=4                  24m 40.69s
+  hw_opt im cobyla N=4                   2m 40.19s
+  hw_opt im spsa N=4                     3m 35.60s
+  hw_opt im qnspsa N=4                  27m 38.05s
+  hw_opt g cobyla N=4                    1m 49.84s
+  hw_opt g spsa N=4                      2m 43.94s
+  hw_opt g qnspsa N=4                   25m 17.17s
+  [M3=ON] run_all                       89m 53.49s
+  [M3=OFF] run_all                      92m 01.09s
+  ────────────────────────────────────────────────
+  TOTAL                                 273m 27.88s
+======================================================
+
