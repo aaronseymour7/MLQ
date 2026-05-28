@@ -1163,7 +1163,9 @@ def run(lattice: BaseLattice,
         results[variant]['ee_profile']    = ee_rows
         results[variant]['mid_spec_ucj']  = mid_spec_ucj
         results[variant]['mid_spec_exact'] = mid_spec_exact
-        write_history_csv(history, variant, lattice.name, n, j1, j2)
+        write_history_csv(history, variant, lattice.name, n, j1, j2,
+                  s_vn_exact=mid_spec_exact['entropy_vn'],
+                  s2_exact=mid_spec_exact['entropy_renyi2'])
 
     _print_summary(n, e_exact, results, variants,
                    lattice_name=lattice.name, j1=j1, j2=j2)
@@ -1351,6 +1353,8 @@ def write_history_csv(
     n: int,
     j1: float,
     j2: float,
+    s_vn_exact: float = float('nan'),
+    s2_exact: float = float('nan'),
     out_dir: str = "layer_summaries",
 ) -> pathlib.Path:
     lat_tag = lattice_name.replace(" ", "_").replace("/", "-")
@@ -1362,21 +1366,28 @@ def write_history_csv(
     fpath = out_path / f"history_{variant}_{lat_tag}_N{n}_J1{j1_tag}_J2{j2_tag}.csv"
 
     fieldnames = [
-    "k",
-    "E",
-    "deltaE",
-    "fid",
-    "dE_layer",
-    "dF_layer",
-    "S_vN",
-    "S2",
-    "schmidt_gap",
-    "schmidt_values",
+        "k", "E", "deltaE", "fid",
+        "dE_layer", "dF_layer",
+        "dSvN_layer", "dS2_layer",
+        "S_vN", "S2",
+        "S_vN_exact", "S2_exact",
+        "dSvN_exact", "dS2_exact",
+        "schmidt_gap", "schmidt_values",
     ]
+
+    enriched = []
+    for row in history:
+        r = dict(row)
+        r["S_vN_exact"]  = s_vn_exact
+        r["S2_exact"]    = s2_exact
+        r["dSvN_exact"]  = r["S_vN"] - s_vn_exact   # negative = undershot, positive = overshot
+        r["dS2_exact"]   = r["S2"]   - s2_exact
+        enriched.append(r)
+
     with open(fpath, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(history)
+        writer.writerows(enriched)
 
     print(f"  [history] wrote {len(history)} rows → {fpath}")
     return fpath
