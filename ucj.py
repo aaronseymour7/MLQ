@@ -611,7 +611,8 @@ def _cold_baseline(
 def adaptive_ucj(variant, n, k_max, e_tol, e_exact, psi_neel, psi_exact_gpu,
                  srcs_flat_gpu, dsts_flat_gpu, row_ptr_np, jastrow_phase_fn, apply_H,
                  tracker: DiagnosticTracker,
-                 n_restarts=N_RESTARTS, n_cold_restarts=N_COLD_RESTARTS, basis = None):
+                 n_restarts=N_RESTARTS, n_cold_restarts=N_COLD_RESTARTS, basis=None,
+                 lattice_name: str = "unknown", j1: float = J1, j2: float = J2):
 
     best = dict(E=np.inf, fid=0., params=None, k=1)
     prev_params = None
@@ -714,6 +715,18 @@ def adaptive_ucj(variant, n, k_max, e_tol, e_exact, psi_neel, psi_exact_gpu,
             f"Fid={layer_best['fid']:.6f}"
             f"{improvement}"
         )
+        
+        gate_counts_k, depth_k = circuit_info_pl(n, k, variant, layer_best["params"])
+        write_circuit_summary(
+            variant=variant,
+            lattice_name=lattice_name,
+            n=n,
+            j1=J1,
+            j2=J2,
+            k=k,
+            gate_counts=gate_counts_k,
+            depth=depth_k,
+        )
 
         history.append({
             "k": k,
@@ -727,11 +740,12 @@ def adaptive_ucj(variant, n, k_max, e_tol, e_exact, psi_neel, psi_exact_gpu,
             "schmidt_gap": spec["schmidt_gap"],
             "schmidt_values": spec["schmidt_values"].tolist(),
         })
-
+        
+        '''
         if delta < e_tol:
             print(f"  ✓ Converged at k={k}.")
             break
-
+        '''
     return best, history
 
 
@@ -939,6 +953,100 @@ def rdm_norms_at_convergence(params: np.ndarray, variant: str, k_layers: int,
 # =============================================================================
 def circuit_info_pl(n: int, k_layers: int, variant: str,
                     params: np.ndarray, pairs=None):
+
+    TARGET_GATES = {"CNOT", "RZ", "S", "Hadamard", "Adjoint(S)"}
+
+    def decompose_rx(op):
+        return [
+            qml.Hadamard(op.wires[0]),
+            qml.RZ(op.data[0], op.wires[0]),
+            qml.Hadamard(op.wires[0]),
+        ]
+
+    def decompose_ry(op):
+        return [
+            qml.S(op.wires[0]),
+            qml.Hadamard(op.wires[0]),
+            qml.RZ(op.data[0], op.wires[0]),
+            qml.Hadamard(op.wires[0]),
+            qml.adjoint(qml.S)(op.wires[0]),  # true S†, not S³
+        ]
+
+    def decompose_phaseshift(op):
+        """PhaseShift(φ) = RZ(φ) up to global phase, sufficient for circuits."""
+        return [qml.RZ(op.data[0], op.wires[0])]
+
+    def manual_expand(tape):
+        new_ops = []
+        for op in tape.operations:
+            if op.name == "RX":
+                new_ops.extend(decompose_rx(op))
+            elif op.name == "RY":
+                new_ops.extend(decompose_ry(op))
+            elif op.name == "PhaseShift":
+                new_ops.extend(decompose_phaseshift(op))
+            else:
+                new_ops.append(op)
+        return qml.tape.QuantumTape(new_ops, tape.measurements)
+
+    # Build and tape the original circuit
+    circuit = build_ucj_pennylane(n, k_layers, variant, pairs)
+    tape = qml.tape.make_qscript(circuit)(params)
+
+    # 1. Decompose into target gate set
+    [decomposed_tape], _ = qml.transforms.decompose(
+        tape, gate_set=TARGET_GATES, max_expansion=10,
+    )
+
+    # 2. Iteratively expand RX/RY/PhaseShift until none remain
+    for _ in range(5):
+        leftover = {op.name for op in decomposed_tape.operations} - TARGET_GATES
+        if not leftover:
+            break
+        
+        decomposed_tape = manual_expand(decomposed_tape)
+        [decomposed_tape], _ = qml.transforms.decompose(
+            decomposed_tape, gate_set=TARGET_GATES, max_expansion=10,
+        )
+    else:
+        leftover = {op.name for op in decomposed_tape.operations} - TARGET_GATES
+        print(f"  WARNING: loop exhausted, remaining: {leftover}")
+
+    # 3. Optimization passes
+    [commuted_tape], _  = qml.transforms.commute_controlled(decomposed_tape)
+    [merged_tape], _    = qml.transforms.merge_rotations(commuted_tape)
+    [optimized_tape], _ = qml.transforms.cancel_inverses(merged_tape)
+
+    # 4. Clean up anything the optimization passes reintroduced
+    optimized_tape = manual_expand(optimized_tape)
+
+    # Sanity check
+    unexpected = {op.name for op in optimized_tape.operations} - TARGET_GATES
+    if unexpected:
+        print(f"  WARNING: gates not fully decomposed: {unexpected}")
+
+    # Count gates on optimized tape
+    gate_counts = {}
+    for op in optimized_tape.operations:
+        gate_counts[op.name] = gate_counts.get(op.name, 0) + 1
+
+    try:
+        depth = optimized_tape.graph.get_depth()
+    except Exception:
+        depth = len(optimized_tape.operations)
+
+    total = sum(gate_counts.values())
+
+    print(f"\n[Circuit info: {variant}-uCJ  N={n}  k={k_layers}]")
+    print(f"  depth={depth}  total_gates={total}")
+    print(f"  Gate counts (decomposed to {TARGET_GATES}):")
+    for gate, count in sorted(gate_counts.items(), key=lambda x: -x[1]):
+        print(f"    {gate:<30} {count}")
+
+    return gate_counts, depth
+'''
+def circuit_info_pl(n: int, k_layers: int, variant: str,
+                    params: np.ndarray, pairs=None):
     circuit = build_ucj_pennylane(n, k_layers, variant, pairs)
     tape    = qml.tape.make_qscript(circuit)(params)
 
@@ -952,7 +1060,7 @@ def circuit_info_pl(n: int, k_layers: int, variant: str,
     for gate, count in sorted(gate_counts.items(), key=lambda x: -x[1]):
         print(f"    {gate:<30} {count}")
     return gate_counts
-
+'''
 
 def print_ucj_operators(n: int, k_layers: int, variant: str,
                         params: np.ndarray, pairs=None):
@@ -1090,7 +1198,8 @@ def run(lattice: BaseLattice,
             psi_neel, psi_exact_gpu,
             srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
             jastrow_phase_fn, apply_H,
-            tracker=tracker, basis = basis)
+            tracker=tracker, basis=basis,
+            lattice_name=lattice.name, j1=j1, j2=j2)
         if timer: timer.stop(label)
 
         tracker.report()
@@ -1106,7 +1215,7 @@ def run(lattice: BaseLattice,
         print(f"\n[{variant}-uCJ]  E_theory={jax_best['E']:.8f}"
               f"  E_pl={E_pl:.8f}  k_opt={jax_best['k']}")
 
-        circuit_info_pl(n, jax_best['k'], variant, params)
+        _,_ = circuit_info_pl(n, jax_best['k'], variant, params)
 
         ov = state_overlap_pl(
             params, variant, jax_best['k'],
@@ -1723,20 +1832,95 @@ def write_entanglement_file(
     return txt_file
 
 
+
+
+# =============================================================================
+# CIRCUIT SUMMARY WRITER  (per-layer, human-readable .txt)
+# =============================================================================
+def write_circuit_summary(
+    variant:      str,
+    lattice_name: str,
+    n:            int,
+    j1:           float,
+    j2:           float,
+    k:            int,
+    gate_counts:  dict,
+    depth:        int,
+    out_dir:      str = "circuit_summaries",
+) -> pathlib.Path:
+    """
+    Append one layer's circuit info to a per-(variant, lattice, J2) .txt file.
+    Each call appends so the file accumulates as layers complete.
+    """
+    lat_tag = lattice_name.replace(" ", "_").replace("/", "-")
+    j1_tag  = f"{j1:.3f}".replace(".", "p")
+    j2_tag  = f"{j2:.3f}".replace(".", "p")
+
+    out_path = pathlib.Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    fpath = out_path / f"circuit_{variant}_{lat_tag}_N{n}_J1{j1_tag}_J2{j2_tag}.txt"
+
+    total = sum(gate_counts.values())
+    W     = 60
+    sep   = "=" * W
+    thin  = "-" * W
+
+    # Header block — only written on the first layer (k==1)
+    if not fpath.exists():
+        header_lines = [
+            sep,
+            f"  CIRCUIT SUMMARY  –  {variant}-uCJ",
+            f"  Lattice  : {lattice_name}   N={n}",
+            f"  J1={j1:.4f}   J2={j2:.4f}",
+            f"  Gate set : CNOT, RZ, S, Hadamard, Adjoint(S)",
+            sep,
+            "",
+        ]
+        fpath.write_text("\n".join(header_lines) + "\n", encoding="utf-8")
+
+    # Per-layer block — always appended
+    block_lines = [
+        f"  [ k = {k} ]",
+        thin,
+        f"  {'depth':<28}  {depth:>8}",
+        f"  {'total gates':<28}  {total:>8}",
+        thin,
+    ]
+
+    # Sort by count descending, then name for stability
+    for gate, count in sorted(gate_counts.items(), key=lambda x: (-x[1], x[0])):
+        block_lines.append(f"  {gate:<28}  {count:>8}")
+
+    block_lines += [thin, ""]
+
+    with open(fpath, "a", encoding="utf-8") as f:
+        f.write("\n".join(block_lines) + "\n")
+
+    print(f"  [circuit_summary]  k={k}  → {fpath}")
+    return fpath
+
+
+
+
+
+
+
 # =============================================================================
 # ENTRY
 # =============================================================================
 if __name__ == '__main__':
-    J2_list = [0.0, 0.25, 0.50, 0.75, 1.00]
-
-    for j2 in J2_list:
+    #J2_list = [0.0, 0.25, 0.50, 0.75, 1.00]
+    n_list = [8,12,16,20]
+    J2_list  = [0.0]
+    
+    for n in n_list:
 
         timer = Timer()
 
-        run(make_lattice('chain', L=16), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
-        run(make_lattice('square', L=16), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
-        run(make_lattice('triangular', L=16), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
-        run(make_lattice('honeycomb', L=18), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
-        run(make_lattice('kagome', L=12), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+        run(make_lattice('chain', L=n), variants=['re', 'im', 'g'], j1=1.0, j2=0.0, timer=timer)
+        #run(make_lattice('square', L=16), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+        #run(make_lattice('triangular', L=16), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+        #run(make_lattice('honeycomb', L=18), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+        #run(make_lattice('kagome', L=12), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
 
         timer.summary("Multi-lattice sweep")
