@@ -32,7 +32,7 @@ from typing import Any
 import numpy as np
 from scipy.sparse import lil_matrix, csr_matrix
 from scipy.sparse.linalg import eigsh
-
+from qiskit import transpile
 # ── TeNPy ────────────────────────────────────────────────────────────────────
 try:
     import tenpy
@@ -45,7 +45,7 @@ try:
     print(f"[TeNPy]  version {tenpy.__version__}")
 except ImportError:
     raise ImportError("pip install physics-tenpy")
-
+from mps_to_circuit import mps_to_circuit
 # ── Qiskit ───────────────────────────────────────────────────────────────────
 try:
     from qiskit import QuantumCircuit
@@ -665,109 +665,36 @@ def run(n: int, j1: float = J1, j2: float = J2,
     if timer: timer.start(label)
     e_dmrg, psi_mps = run_dmrg(n, j1, j2, chi_max)
     if timer: timer.stop(label)
+    mps_arrays = [psi_mps.get_B(i).to_ndarray() for i in range(n)]
+    ex_qc = mps_to_circuit(mps_arrays, method="exact", shape="lpr")
+    qc_info(ex_qc, 'exact')
+    apx_qc = mps_to_circuit(mps_arrays, method="approximate", shape="lpr", num_layers=10)
+    qc_info(apx_qc, 'Approximate')
+    return ex_qc
 
-    # ── 3. MPS → statevector ─────────────────────────────────────────────────
-    label = f"MPS→SV {lattice_name}"
-    if timer: timer.start(label)
-    sv_full = mps_to_statevector(psi_mps, n)
-    psi_dmrg_sector = mps_sv_to_sector(sv_full, n, basis)
-    if timer: timer.stop(label)
+def qc_info(qc, circuit_type):
+    print(f"\n[{circuit_type}]")
 
-    fid = compute_fidelity(sv_full, psi_exact, basis)
-    print(f"[DMRG→SV]  fidelity={fid:.8f}  "
-          f"|ΔE_dmrg|={abs(e_dmrg-e_exact):.4e}")
+    basis = ["cx", "rz", "h", "s", "sdg"]
 
-    # ── 4. Statevector → Qiskit circuit ──────────────────────────────────────
-    label = f"SV→circuit {lattice_name}"
-    if timer: timer.start(label)
-    qc_raw        = statevector_to_circuit(sv_full, n)
-    qc_transpiled = transpile_to_target(qc_raw)
-    if timer: timer.stop(label)
-
-    gate_counts, depth = gate_counts_from_qiskit(qc_transpiled)
-    total_gates = sum(gate_counts.values())
-    print(f"\n[Circuit]  depth={depth}  total_gates={total_gates}")
-    for gate, count in sorted(gate_counts.items(), key=lambda x: -x[1]):
-        print(f"  {gate:<30} {count}")
-
-    # ── 5. PennyLane energy evaluation ───────────────────────────────────────
-    label = f"PL eval {lattice_name}"
-    if timer: timer.start(label)
-    E_pl = qiskit_to_pennylane_energy(
-        qc_transpiled, n, nn_edges, nnn_edges, j1, j2)
-    if timer: timer.stop(label)
-    print(f"\n[PL energy]  E_pl={E_pl:.8f}  E_exact={e_exact:.8f}  "
-          f"|ΔE_pl|={abs(E_pl-e_exact):.4e}")
-
-    # ── 6. Overlap with exact state ──────────────────────────────────────────
-    overlap = fid   # |<DMRG|exact>|² already computed above
-
-    # ── 7. RDM norms ─────────────────────────────────────────────────────────
-    rdm_data = rdm_norms(psi_dmrg_sector, n, basis, bindex)
-
-    # ── 8. Schmidt spectra ───────────────────────────────────────────────────
-    mid_spec_dmrg  = schmidt_spectrum(psi_dmrg_sector, basis, n)
-    mid_spec_exact = schmidt_spectrum(psi_exact,       basis, n)
-    print_schmidt(mid_spec_dmrg,  label="DMRG")
-    print_schmidt(mid_spec_exact, label="exact ED")
-    ee_rows = compare_schmidt(psi_dmrg_sector, psi_exact, basis, n)
-
-    # ── 9. Write outputs ─────────────────────────────────────────────────────
-    write_circuit_summary(lattice_name, n, j1, j2, chi_max, gate_counts, depth)
-    write_summary_file(
-        lattice_name, n, j1, j2, chi_max,
-        e_exact, e_dmrg, E_pl, fid, overlap,
-        gate_counts, depth, rdm_data)
-
-    history_row = dict(
-        method="DMRG",
-        chi_max=chi_max,
-        E=e_dmrg,
-        deltaE=abs(e_dmrg - e_exact),
-        fid=fid,
-        E_pl=E_pl,
-        S_vN=mid_spec_dmrg['entropy_vn'],
-        S2=mid_spec_dmrg['entropy_renyi2'],
-        S_vN_exact=mid_spec_exact['entropy_vn'],
-        S2_exact=mid_spec_exact['entropy_renyi2'],
-        dSvN_exact=mid_spec_dmrg['entropy_vn'] - mid_spec_exact['entropy_vn'],
-        dS2_exact=mid_spec_dmrg['entropy_renyi2'] - mid_spec_exact['entropy_renyi2'],
-        schmidt_gap=mid_spec_dmrg['schmidt_gap'],
-    )
-    write_history_csv(history_row, lattice_name, n, j1, j2, chi_max)
-
-    # ── 10. Summary ──────────────────────────────────────────────────────────
-    W2 = 72
-    print(f"\n{'='*W2}")
-    print(f"  SUMMARY  {lattice_name}  N={n}  J1={j1}  J2={j2}  chi_max={chi_max}")
-    print(f"{'='*W2}")
-    print(f"  E_exact          = {e_exact:.8f}   E/site = {e_exact/n:.8f}")
-    print(f"  E_dmrg           = {e_dmrg:.8f}   |ΔE| = {abs(e_dmrg-e_exact):.4e}")
-    print(f"  E_pl (noiseless) = {E_pl:.8f}   |ΔE| = {abs(E_pl-e_exact):.4e}")
-    print(f"  fidelity         = {fid:.8f}")
-    print(f"  overlap          = {overlap:.8f}")
-    print(f"  ‖Re(ρ)‖_F        = {rdm_data['re_frob']:.6f}")
-    print(f"  ‖Im(ρ)‖_F        = {rdm_data['im_frob']:.6f}")
-    print(f"  Im/Re ratio      = {rdm_data['ratio']:.6f}")
-    print(f"  circuit depth    = {depth}")
-    print(f"  total gates      = {total_gates}")
-    print(f"{'='*W2}\n")
-
-    return dict(
-        e_exact=e_exact, e_dmrg=e_dmrg, E_pl=E_pl,
-        fidelity=fid, overlap=overlap,
-        gate_counts=gate_counts, depth=depth,
-        rdm=rdm_data,
-        mid_spec_dmrg=mid_spec_dmrg, mid_spec_exact=mid_spec_exact,
-        ee_rows=ee_rows,
+    qc_basis = transpile(
+        qc,
+        basis_gates=basis,
+        optimization_level=0
     )
 
-
+    print(f"Qubits: {qc_basis.num_qubits}")
+    print(f"Depth: {qc_basis.depth()}")
+    print(f"Total gates: {qc_basis.size()}")
+    print("Gate counts:")
+    
+    for gate, count in qc_basis.count_ops().items():
+        print(f"  {gate:<5} {count}")
 # =============================================================================
 # ENTRY
 # =============================================================================
 if __name__ == '__main__':
-    n_list  = [8, 12, 16, 20]
+    n_list  = [8]
     J2_list = [0.0]
 
     for n in n_list:
