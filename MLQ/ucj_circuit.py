@@ -427,5 +427,5 @@ def build_ucj(
 if __name__ == "__main__":
     lattice = make_lattice('kagome', L=n)
 
-    tqc, counts, depth = build_ucj(lattice, j1=1.0, j2=5.0,
+    tqc, counts, depth = build_ucj(lattice, j1=1.0, j2=0.0,
                                    variant="re", k_layers=1)
