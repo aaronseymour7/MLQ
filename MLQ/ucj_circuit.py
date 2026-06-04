@@ -350,7 +350,6 @@ def build_ucj(
 
     Parameters
     ----------
-    n           : number of qubits / sites
     lattice     : object with .nn_edges and .nnn_edges
     j1, j2      : Heisenberg couplings
     variant     : 're' | 'im' | 'g'
@@ -364,6 +363,8 @@ def build_ucj(
     gate_counts : dict[str, int]
     depth       : int
     """
+    n = lattice.num_sites()
+    
     if pairs is None:
         pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
     if basis_gates is None:
@@ -423,17 +424,7 @@ def build_ucj(
 # DEMO
 # =============================================================================
 if __name__ == "__main__":
-    from dataclasses import dataclass
+lattice = make_lattice('kagome', L=n)
 
-    @dataclass
-    class Chain:
-        n_sites: int
-        @property
-        def nn_edges(self):
-            return [(i, (i + 1) % self.n_sites) for i in range(self.n_sites)]
-        @property
-        def nnn_edges(self):
-            return [(i, (i + 2) % self.n_sites) for i in range(self.n_sites)]
-
-    tqc, counts, depth = build_ucj(Chain(6), j1=1.0, j2=5.0,
+    tqc, counts, depth = build_ucj(lattice, j1=1.0, j2=5.0,
                                    variant="re", k_layers=1)
