@@ -91,10 +91,8 @@ class TenpyLattice:
         nn  = len(self.nn_edges)
         nnn = len(self.nnn_edges)
 
-        # Each edge is shared by 2 sites, so nn = N * z / 2
-        # Expected coordination numbers (PBC, per site):
         expected_z = {
-            'chain':       (2,  2),   # nn z=2, nnn z=2
+            'chain':       (2,  2),
             'square':      (4,  4),
             'triangular':  (6,  6),
             'honeycomb':   (3,  6),
@@ -104,7 +102,16 @@ class TenpyLattice:
         if kind not in expected_z or not self.pbc:
             return
 
-        z_nn, z_nnn = expected_z[kind]
+        # Skip validation for lattices so small that PBC causes bond collapse
+        # (e.g. 2×2 square: the +x and -x neighbours of a site are the same site).
+        # This is a degenerate geometry, not a bug in edge-building.
+        Ls = self._lat.Ls                         # e.g. (2, 2) for a 2×2 square
+        if any(l < 3 for l in Ls):
+            print(f"[{self.name}]  skipping validation: lattice too small "
+                  f"(Ls={list(Ls)}) for PBC edge-count check.")
+            return
+
+        z_nn, z_nnn  = expected_z[kind]
         expected_nn  = N * z_nn  // 2
         expected_nnn = N * z_nnn // 2
 
