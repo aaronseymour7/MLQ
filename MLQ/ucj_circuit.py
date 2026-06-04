@@ -363,7 +363,7 @@ def build_ucj(
     gate_counts : dict[str, int]
     depth       : int
     """
-    n = lattice.num_sites()
+    n = lattice.n_sites()
     
     if pairs is None:
         pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
@@ -424,7 +424,7 @@ def build_ucj(
 # DEMO
 # =============================================================================
 if __name__ == "__main__":
-lattice = make_lattice('kagome', L=n)
+    lattice = make_lattice('kagome', L=n)
 
     tqc, counts, depth = build_ucj(lattice, j1=1.0, j2=5.0,
                                    variant="re", k_layers=1)
