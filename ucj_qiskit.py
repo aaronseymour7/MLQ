@@ -25,8 +25,11 @@ from typing import Any
 
 import numpy as np
 from scipy.sparse import lil_matrix, csr_matrix
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import eigsh, LinearOperator
 from scipy.optimize import minimize as scipy_minimize
+from scipy.sparse import coo_matrix
+from scipy.sparse.linalg import svds
+import functools
 
 import jax
 import jax.numpy as jnp
@@ -68,7 +71,7 @@ J1          = 1.0
 J2          = 0.0
 PBC         = True
 ALPHA       = 3
-K_MAX       = 4
+K_MAX       = 1
 E_TOL       = 1e-6
 SEED        = 23
 N_RESTARTS  = 1
@@ -126,16 +129,26 @@ class Timer:
 @dataclass
 class RestartRecord:
     restart_idx:      int
-    kind:             str        # "cold" | "layer_append"
+    kind:             str
     x0_norm:          float
     x0_jastrow_norm:  float
     x0_givens_norm:   float
     E_final:          float
-    fidelity:         float
+    variance:         float
     nit:              int
     nfev:             int
     wall_sec:         float
     converged:        bool
+
+    def report(self):
+        # ... (header lines unchanged) ...
+        for lr in sorted(self.layers, key=lambda l: l.k):
+            for r in lr.restarts:
+                dE   = abs(r.E_final - self.e_exact)
+                conv = " ✓" if r.converged else ""
+                print(f"  {lr.k:<4} {r.restart_idx:<10} {r.kind:<14} "
+                      f"{r.E_final:>12.8f} {dE:>10.6f} {r.variance:>10.6e} "  # ← variance
+                      f"{r.nit:>6} {r.wall_sec:>7.1f}{conv}")
 
 
 @dataclass
@@ -196,7 +209,7 @@ class DiagnosticTracker:
                 dE   = abs(r.E_final - self.e_exact)
                 conv = " ✓" if r.converged else ""
                 print(f"  {lr.k:<4} {r.restart_idx:<10} {r.kind:<14} "
-                      f"{r.E_final:>12.8f} {dE:>10.6f} {r.fidelity:>10.6f} "
+                      f"{r.E_final:>12.8f} {dE:>10.6f}  "
                       f"{r.nit:>6} {r.wall_sec:>7.1f}{conv}")
 
         print(f"\n  [2]  INIT VECTOR DECOMPOSITION  (norms by block)")
@@ -219,24 +232,51 @@ def build_basis(n, n_up):
                     dtype=np.int64)
 
 
-def build_hamiltonian(n, n_up, nn_edges, nnn_edges, j1=J1, j2=J2):
-    basis   = build_basis(n, n_up)
+def build_hamiltonian_matvec(n, n_up, nn_edges, nnn_edges, j1=J1, j2=J2):
+    """
+    Returns (matvec, basis, idx_map) without ever building the dense matrix.
+    Stores only COO triplets; applies H via a single scatter-add per call.
+    Memory: O(nnz)  vs  O(dim^2) before.
+    """
+    basis   = build_basis(n, n_up)          # still need basis list
     idx_map = {int(b): i for i, b in enumerate(basis)}
-    H       = lil_matrix((len(basis), len(basis)), dtype=np.float64)
+    dim     = len(basis)
+
+    rows_list, cols_list, vals_list = [], [], []
 
     for edges, j in [(nn_edges, j1), (nnn_edges, j2)]:
         for si, sj in edges:
             for row, bits in enumerate(basis):
                 zi = 0.5 if (bits >> si) & 1 else -0.5
                 zj = 0.5 if (bits >> sj) & 1 else -0.5
-                H[row, row] += j * zi * zj
+                rows_list.append(row); cols_list.append(row)
+                vals_list.append(j * zi * zj)
                 if ((bits >> si) & 1) != ((bits >> sj) & 1):
                     fl  = bits ^ (1 << si) ^ (1 << sj)
                     col = idx_map.get(int(fl), -1)
                     if col >= 0:
-                        H[row, col] += 0.5 * j
+                        rows_list.append(row); cols_list.append(col)
+                        vals_list.append(0.5 * j)
 
-    return csr_matrix(H), basis, idx_map
+    rows_np = np.array(rows_list, dtype=np.int32)
+    cols_np = np.array(cols_list, dtype=np.int32)
+    vals_np = np.array(vals_list, dtype=np.float64)
+
+    def matvec(v):
+        out = np.zeros(dim, dtype=v.dtype)
+        np.add.at(out, rows_np, vals_np * v[cols_np])
+        return out
+
+    op = LinearOperator((dim, dim), matvec=matvec, dtype=np.float64)
+    return op, basis, idx_map
+
+def get_ground_state(n, n_up, nn_edges, nnn_edges, j1=J1, j2=J2):
+    op, basis, idx_map = build_hamiltonian_matvec(
+        n, n_up, nn_edges, nnn_edges, j1, j2)
+    evals, evecs = eigsh(op, k=1, which='SA', tol=1e-10, maxiter=10_000)
+    e_exact      = float(evals[0])
+    psi_exact_np = evecs[:, 0] / np.linalg.norm(evecs[:, 0])
+    return e_exact, psi_exact_np, basis, idx_map
 
 
 def get_n_up(n):
@@ -271,7 +311,7 @@ def build_jax_hamiltonian(n, n_up, nn_edges, nnn_edges, j1=J1, j2=J2):
 
 
 def make_apply_H(h_rows, h_cols, h_vals, dim):
-    @jax.jit
+    @functools.partial(jax.jit, donate_argnums=())
     def apply_H(psi):
         return (jnp.zeros(dim, dtype=psi.dtype)
                 .at[h_rows].add(h_vals * psi[h_cols]))
@@ -297,40 +337,29 @@ def build_jastrow_indices(n, basis):
 
 
 def _make_jastrow_phase_fn(pair_i_np, pair_j_np, basis_bits_gpu):
+    """
+    Computes  phase[b] = Σ_k  theta_k * occ(b,i_k) * occ(b,j_k)
+    without ever materialising the [n_pair × dim] occupation matrix.
+
+    Uses lax.scan over pairs: O(n_pair × dim) time, O(dim) peak memory.
+    """
     pi_gpu = _to_device(jnp.array(pair_i_np, dtype=jnp.int32))
     pj_gpu = _to_device(jnp.array(pair_j_np, dtype=jnp.int32))
 
-    if not JASTROW_CHUNKED:
-        def _occ_product(i, j):
-            bi = (basis_bits_gpu >> i.astype(jnp.int32)) & 1
-            bj = (basis_bits_gpu >> j.astype(jnp.int32)) & 1
-            return (bi * bj).astype(jnp.float64)
+    @jax.jit
+    def jastrow_phase(theta_J):
+        def accumulate(phase, k_args):
+            theta_k, i_k, j_k = k_args
+            bi = ((basis_bits_gpu >> i_k) & 1).astype(jnp.float64)
+            bj = ((basis_bits_gpu >> j_k) & 1).astype(jnp.float64)
+            return phase + theta_k * bi * bj, None
 
-        _occ_mat_fn = jax.vmap(_occ_product)
-
-        @jax.jit
-        def jastrow_phase(theta_J):
-            return jnp.dot(theta_J, _occ_mat_fn(pi_gpu, pj_gpu))
-    else:
-        n_pair = pair_i_np.shape[0]
-        chunk  = JASTROW_CHUNK
-
-        @jax.jit
-        def jastrow_phase(theta_J):
-            phase = jnp.zeros(basis_bits_gpu.shape[0], dtype=jnp.float64)
-            for start in range(0, n_pair, chunk):
-                end  = min(start + chunk, n_pair)
-                pi_c = pi_gpu[start:end]
-                pj_c = pj_gpu[start:end]
-                th_c = theta_J[start:end]
-
-                def _occ_c(i, j):
-                    bi = (basis_bits_gpu >> i.astype(jnp.int32)) & 1
-                    bj = (basis_bits_gpu >> j.astype(jnp.int32)) & 1
-                    return (bi * bj).astype(jnp.float64)
-
-                phase = phase + jnp.dot(th_c, jax.vmap(_occ_c)(pi_c, pj_c))
-            return phase
+        phase, _ = jax.lax.scan(
+            accumulate,
+            jnp.zeros(basis_bits_gpu.shape[0], dtype=jnp.float64),
+            (theta_J, pi_gpu, pj_gpu),
+        )
+        return phase
 
     return jastrow_phase
 
@@ -342,7 +371,7 @@ def apply_jastrow(psi, theta_J, jastrow_phase_fn):
 # =============================================================================
 # GIVENS PAIRS
 # =============================================================================
-def build_givens_pairs(n, basis, idx_map):
+def build_givens_pairs_padded(n, basis, idx_map):
     srcs_ragged, dsts_ragged = [], []
     for i in range(n):
         for j in range(i + 1, n):
@@ -471,24 +500,33 @@ def make_energy_grad(variant, n, k_layers, psi0,
     return jit_val_grad, jit_efn
 
 
-def fidelity(theta, variant, k_layers, psi0, psi_exact_gpu,
-             srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
-             jastrow_phase_fn, n):
+def energy_variance(theta, variant, k_layers, psi0, apply_H,
+                    srcs_pad, dsts_pad, mask_pad, jastrow_phase_fn, n):
+    """
+    Var[H] = <H^2> - <H>^2  (zero iff psi is an eigenstate).
+    Replaces fidelity as a convergence diagnostic.
+    Cost: two H applications per call instead of one.
+    """
     n_pair    = n * (n - 1) // 2
     theta_gpu = _to_device(jnp.array(theta, dtype=jnp.float64))
+
     _state_fns = {
         're': lambda th: ucj_state_re(th, k_layers, psi0, n_pair,
-                                      srcs_flat_gpu, dsts_flat_gpu,
-                                      row_ptr_np, jastrow_phase_fn),
+                                      srcs_pad, dsts_pad, mask_pad,
+                                      jastrow_phase_fn),
         'im': lambda th: ucj_state_im(th, k_layers, psi0, n_pair,
-                                      srcs_flat_gpu, dsts_flat_gpu,
-                                      row_ptr_np, jastrow_phase_fn),
+                                      srcs_pad, dsts_pad, mask_pad,
+                                      jastrow_phase_fn),
         'g':  lambda th: ucj_state_g(th, k_layers, psi0, n_pair,
-                                     srcs_flat_gpu, dsts_flat_gpu,
-                                     row_ptr_np, jastrow_phase_fn),
+                                     srcs_pad, dsts_pad, mask_pad,
+                                     jastrow_phase_fn),
     }
-    psi = _state_fns[variant](theta_gpu)
-    return float(jnp.abs(jnp.dot(jnp.conj(psi_exact_gpu), psi)) ** 2)
+    psi  = _state_fns[variant](theta_gpu)
+    norm = jnp.dot(jnp.conj(psi), psi)
+    Hpsi = apply_H(psi)
+    E    = jnp.real(jnp.dot(jnp.conj(psi), Hpsi) / norm)
+    H2   = jnp.real(jnp.dot(jnp.conj(Hpsi), Hpsi) / norm)
+    return float(H2 - E ** 2)
 
 
 # =============================================================================
@@ -506,21 +544,10 @@ def cold_start(variant, n, k_layers, seed=SEED, noise_scale=0.05):
 # INSTRUMENTED L-BFGS
 # =============================================================================
 def _optimise_layer_instrumented(
-    tracker:      DiagnosticTracker,
-    variant:      str,
-    n:            int,
-    k:            int,
-    x0:           np.ndarray,
-    x0_kind:      str,
-    restart_idx:  int,
-    e_exact:      float,
-    e_tol:        float,
-    val_grad_fn,
-    fidelity_fn,
-    n_pair:       int,
-    lbfgs_maxiter: int = LBFGS_MAXITER,
-    lbfgs_maxfun:  int = LBFGS_MAXFUN,
-) -> tuple[np.ndarray, float, RestartRecord]:
+    tracker, variant, n, k, x0, x0_kind, restart_idx,
+    e_exact, e_tol, val_grad_fn, variance_fn, n_pair,   # variance_fn replaces fidelity_fn
+    lbfgs_maxiter=LBFGS_MAXITER, lbfgs_maxfun=LBFGS_MAXFUN,
+):
     x0_jJ      = x0[:n_pair]
     x0_gK      = x0[n_pair:]
     x0_norm    = float(np.linalg.norm(x0))
@@ -544,7 +571,7 @@ def _optimise_layer_instrumented(
 
     opt_x = np.array(result.x)
     opt_E = float(result.fun)
-    fid   = fidelity_fn(opt_x)
+    var   = variance_fn(opt_x)          # replaces fidelity call
 
     record = RestartRecord(
         restart_idx=restart_idx,
@@ -553,7 +580,7 @@ def _optimise_layer_instrumented(
         x0_jastrow_norm=x0_jJ_norm,
         x0_givens_norm=x0_gK_norm,
         E_final=opt_E,
-        fidelity=fid,
+        variance=var,                   # replaces fidelity field
         nit=result.nit,
         nfev=result.nfev,
         wall_sec=wall,
@@ -563,23 +590,16 @@ def _optimise_layer_instrumented(
 
     print(f"  [{x0_kind:>14} restart={restart_idx}  k={k}]  "
           f"E={opt_E:.8f}  |ΔE|={abs(opt_E-e_exact):.4e}  "
-          f"|<ψ|exact>|²={fid:.6f}  nit={result.nit}  nfev={result.nfev}  "
+          f"Var={var:.4e}  nit={result.nit}  nfev={result.nfev}  "
           f"t={wall:.1f}s")
 
     return opt_x, opt_E, record
 
 
 def _cold_baseline(
-    tracker:      DiagnosticTracker,
-    k:            int,
-    n_pair:       int,
-    n_restarts:   int,
-    e_exact:      float,
-    e_tol:        float,
-    val_grad_fn,
-    fidelity_fn,
-    noise_scale:  float = 0.05,
-    seed:         int   = 9999,
+    tracker, k, n_pair, n_restarts, e_exact, e_tol,
+    val_grad_fn, variance_fn,           # variance_fn replaces fidelity_fn
+    noise_scale=0.05, seed=9999,
 ):
     variant = tracker.variant
     n       = tracker.n
@@ -593,34 +613,38 @@ def _cold_baseline(
             tracker=tracker, variant=variant, n=n, k=k,
             x0=x0_cold, x0_kind="cold", restart_idx=i,
             e_exact=e_exact, e_tol=e_tol,
-            val_grad_fn=val_grad_fn, fidelity_fn=fidelity_fn,
+            val_grad_fn=val_grad_fn, variance_fn=variance_fn,
             n_pair=n_pair)
 
 
 # =============================================================================
 # ADAPTIVE LAYER SEARCH
 # =============================================================================
-def adaptive_ucj(variant, n, k_max, e_tol, e_exact, psi_neel, psi_exact_gpu,
-                 srcs_flat_gpu, dsts_flat_gpu, row_ptr_np, jastrow_phase_fn, apply_H,
+def adaptive_ucj(variant, n, k_max, e_tol, e_exact, psi_neel,
+                 srcs_pad, dsts_pad, mask_pad, jastrow_phase_fn, apply_H,
                  tracker: DiagnosticTracker,
-                 n_restarts=N_RESTARTS, n_cold_restarts=N_COLD_RESTARTS, basis=None,
-                 lattice_name: str = "unknown", j1: float = J1, j2: float = J2):
+                 n_restarts=N_RESTARTS, n_cold_restarts=N_COLD_RESTARTS,
+                 basis=None, lattice_name: str = "unknown",
+                 j1: float = J1, j2: float = J2):
 
-    best       = dict(E=np.inf, fid=0., params=None, k=1)
+    best        = dict(E=np.inf, variance=np.inf, params=None, k=1)
     prev_params = None
-    n_pair     = n * (n - 1) // 2
-    history    = []
+    n_pair      = n * (n - 1) // 2
+    history     = []
 
     for k in range(1, k_max + 1):
-        layer_best = dict(E=np.inf, params=None, fid=0.)
-        val_grad_fn, _ = make_energy_grad(
-            variant, n, k, psi_neel, srcs_flat_gpu, dsts_flat_gpu,
-            row_ptr_np, jastrow_phase_fn, apply_H)
+        layer_best = dict(E=np.inf, variance=np.inf, params=None)
 
-        def fid_fn(x):
-            return fidelity(x, variant, k, psi_neel, psi_exact_gpu,
-                            srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
-                            jastrow_phase_fn, n)
+        val_grad_fn, _ = make_energy_grad(
+            variant, n, k, psi_neel,
+            srcs_pad, dsts_pad, mask_pad,
+            jastrow_phase_fn, apply_H)
+
+        def var_fn(x):
+            return energy_variance(
+                x, variant, k, psi_neel, apply_H,
+                srcs_pad, dsts_pad, mask_pad,
+                jastrow_phase_fn, n)
 
         for restart in range(n_restarts):
             rng = np.random.default_rng(SEED + k * 100 + restart)
@@ -637,20 +661,24 @@ def adaptive_ucj(variant, n, k_max, e_tol, e_exact, psi_neel, psi_exact_gpu,
                 x0_kind = "layer_append"
 
             opt_x, opt_E, record = _optimise_layer_instrumented(
-                tracker=tracker, variant=variant, n=n, k=k, x0=x0, x0_kind=x0_kind,
+                tracker=tracker, variant=variant, n=n, k=k,
+                x0=x0, x0_kind=x0_kind,
                 restart_idx=restart, e_exact=e_exact, e_tol=e_tol,
-                val_grad_fn=val_grad_fn, fidelity_fn=fid_fn, n_pair=n_pair)
+                val_grad_fn=val_grad_fn, variance_fn=var_fn,
+                n_pair=n_pair)
 
             if opt_E < layer_best['E']:
-                layer_best.update(E=opt_E, params=opt_x, fid=record.fidelity)
+                layer_best.update(E=opt_E, variance=record.variance,
+                                  params=opt_x)
             if record.converged:
                 break
 
         if n_cold_restarts > 0:
             _cold_baseline(
-                tracker=tracker, k=k, n_pair=n_pair, n_restarts=n_cold_restarts,
-                e_exact=e_exact, e_tol=e_tol, val_grad_fn=val_grad_fn,
-                fidelity_fn=fid_fn)
+                tracker=tracker, k=k, n_pair=n_pair,
+                n_restarts=n_cold_restarts,
+                e_exact=e_exact, e_tol=e_tol,
+                val_grad_fn=val_grad_fn, variance_fn=var_fn)
 
         prev_params = layer_best['params']
         if layer_best['E'] < best['E']:
@@ -661,45 +689,47 @@ def adaptive_ucj(variant, n, k_max, e_tol, e_exact, psi_neel, psi_exact_gpu,
 
         _state_fns = {
             're': lambda th: ucj_state_re(th, k, psi_neel, n_pair,
-                                          srcs_flat_gpu, dsts_flat_gpu,
-                                          row_ptr_np, jastrow_phase_fn),
+                                          srcs_pad, dsts_pad, mask_pad,
+                                          jastrow_phase_fn),
             'im': lambda th: ucj_state_im(th, k, psi_neel, n_pair,
-                                          srcs_flat_gpu, dsts_flat_gpu,
-                                          row_ptr_np, jastrow_phase_fn),
+                                          srcs_pad, dsts_pad, mask_pad,
+                                          jastrow_phase_fn),
             'g':  lambda th: ucj_state_g(th, k, psi_neel, n_pair,
-                                         srcs_flat_gpu, dsts_flat_gpu,
-                                         row_ptr_np, jastrow_phase_fn),
+                                         srcs_pad, dsts_pad, mask_pad,
+                                         jastrow_phase_fn),
         }
 
-        psi_layer = np.array(_state_fns[variant](theta_gpu), dtype=np.complex128)
+        psi_layer  = np.array(_state_fns[variant](theta_gpu), dtype=np.complex128)
         psi_layer /= np.linalg.norm(psi_layer)
 
-        spec = schmidt_spectrum(psi_layer, np.array(list(basis), dtype=np.int64), n)
+        spec = schmidt_spectrum(
+            psi_layer, np.array(list(basis), dtype=np.int64), n)
         print_schmidt(spec, label=f"{variant}-uCJ layer k={k}")
 
-        dE_layer = (history[-1]["E"] - layer_best["E"]) if history else None
-        dF_layer = (layer_best["fid"] - history[-1]["fid"]) if history else None
-        improvement = (f"  ΔE_layer={dE_layer:+.4e}  ΔFid_layer={dF_layer:+.4e}"
+        dE_layer  = (history[-1]["E"] - layer_best["E"]) if history else None
+        dVar_layer = (history[-1]["variance"] - layer_best["variance"]) if history else None
+        improvement = (f"  ΔE_layer={dE_layer:+.4e}  ΔVar_layer={dVar_layer:+.4e}"
                        if dE_layer is not None else "")
-        print(f"[{variant}-uCJ k={k}] "
+        print(f"[{variant}-uCJ k={k}]  "
               f"E={layer_best['E']:.8f}  |ΔE_exact|={delta:.4e}  "
-              f"Fid={layer_best['fid']:.6f}{improvement}")
+              f"Var={layer_best['variance']:.4e}{improvement}")
 
-        gate_counts_k, depth_k = circuit_info_qiskit(n, k, variant, layer_best["params"])
+        gate_counts_k, depth_k = circuit_info_qiskit(
+            n, k, variant, layer_best["params"])
         write_circuit_summary(
             variant=variant, lattice_name=lattice_name, n=n,
             j1=j1, j2=j2, k=k, gate_counts=gate_counts_k, depth=depth_k)
 
         history.append({
-            "k": k,
-            "E": layer_best["E"],
-            "deltaE": delta,
-            "fid": layer_best["fid"],
-            "dE_layer": dE_layer,
-            "dF_layer": dF_layer,
-            "S_vN": spec["entropy_vn"],
-            "S2": spec["entropy_renyi2"],
-            "schmidt_gap": spec["schmidt_gap"],
+            "k":            k,
+            "E":            layer_best["E"],
+            "deltaE":       delta,
+            "variance":     layer_best["variance"],
+            "dE_layer":     dE_layer,
+            "dVar_layer":   dVar_layer,
+            "S_vN":         spec["entropy_vn"],
+            "S2":           spec["entropy_renyi2"],
+            "schmidt_gap":  spec["schmidt_gap"],
             "schmidt_values": spec["schmidt_values"].tolist(),
         })
 
@@ -949,115 +979,127 @@ def state_overlap(params: np.ndarray, variant: str, k_layers: int,
 # =============================================================================
 # RDM FROBENIUS NORMS
 # =============================================================================
-def rdm_norms_at_convergence(params: np.ndarray, variant: str, k_layers: int,
-                              psi_neel, srcs_flat_gpu, dsts_flat_gpu,
-                              row_ptr_np, jastrow_phase_fn, n: int,
-                              basis, bindex) -> dict:
+def rdm_norms_at_convergence(params, variant, k_layers, psi0,
+                              srcs_pad, dsts_pad, mask_pad,
+                              jastrow_phase_fn, apply_H, n, basis, bindex):
     n_pair    = n * (n - 1) // 2
     theta_gpu = _to_device(jnp.array(params, dtype=jnp.float64))
+    basis_np  = list(basis)
 
     _state_fns = {
-        're': lambda th: ucj_state_re(th, k_layers, psi_neel, n_pair,
-                                      srcs_flat_gpu, dsts_flat_gpu,
-                                      row_ptr_np, jastrow_phase_fn),
-        'im': lambda th: ucj_state_im(th, k_layers, psi_neel, n_pair,
-                                      srcs_flat_gpu, dsts_flat_gpu,
-                                      row_ptr_np, jastrow_phase_fn),
-        'g':  lambda th: ucj_state_g(th, k_layers, psi_neel, n_pair,
-                                     srcs_flat_gpu, dsts_flat_gpu,
-                                     row_ptr_np, jastrow_phase_fn),
+        're': lambda th: ucj_state_re(th, k_layers, psi0, n_pair,
+                                      srcs_pad, dsts_pad, mask_pad, jastrow_phase_fn),
+        'im': lambda th: ucj_state_im(th, k_layers, psi0, n_pair,
+                                      srcs_pad, dsts_pad, mask_pad, jastrow_phase_fn),
+        'g':  lambda th: ucj_state_g(th, k_layers, psi0, n_pair,
+                                     srcs_pad, dsts_pad, mask_pad, jastrow_phase_fn),
     }
-    psi      = np.array(_state_fns[variant](theta_gpu), dtype=np.complex128)
-    psi     /= np.linalg.norm(psi)
-    basis_np = list(basis)
-    idx_map  = bindex
+    psi_gpu = _state_fns[variant](theta_gpu)
+    norm    = jnp.sqrt(jnp.dot(jnp.conj(psi_gpu), psi_gpu))
+    psi_gpu = psi_gpu / norm
 
-    basis_arr = np.array(
-        [[(1 if (b >> s) & 1 else -1) for s in range(n)] for b in basis_np],
-        dtype=np.float64)
-    occ   = (basis_arr + 1) / 2
-    probs = np.abs(psi) ** 2
+    basis_gpu    = _to_device(jnp.array(basis_np, dtype=jnp.int32))
+    shifts       = _to_device(jnp.arange(n, dtype=jnp.int32))
+    occ_gpu      = ((basis_gpu[:, None] >> shifts[None, :]) & 1).astype(jnp.float64)
+    probs_gpu    = jnp.abs(psi_gpu) ** 2
 
-    rho    = np.zeros((n, n), dtype=np.complex128)
-    n_mean = (probs[:, None] * occ).sum(0)
-    for i in range(n):
-        rho[i, i] = n_mean[i]
+    # Diagonal
+    rho_diag = jnp.einsum('b,bi->i', probs_gpu, occ_gpu)  # [n]
 
+    # Hoist sorted basis lookup out of the per-pair loop
+    sorted_order = jnp.argsort(basis_gpu)
+    sorted_basis = basis_gpu[sorted_order]   # sorted values
+    sorted_idx   = sorted_order              # original positions
+
+    # Pre-compute site index array once
+    site_indices = jnp.arange(n, dtype=jnp.int32)  # [n]
+
+    @jax.jit
+    def rho_offdiag_ij(i, j):
+        # States where site i occupied, site j empty
+        mask_src = (((basis_gpu >> i) & 1) & ~((basis_gpu >> j) & 1)).astype(bool)
+
+        # Flip both bits to get the connected basis state
+        flip    = jnp.int32((1 << i) | (1 << j))
+        flipped = basis_gpu ^ flip  # [dim]
+
+        # Lookup flipped state index via sorted searchsorted
+        pos     = jnp.searchsorted(sorted_basis, flipped)
+        pos     = jnp.clip(pos, 0, len(sorted_basis) - 1)
+        col_idx = jnp.where(sorted_basis[pos] == flipped, sorted_idx[pos], -1)
+
+        # Jordan-Wigner sign: count occupied sites strictly between i and j
+        # FIX: replace dynamic slice with boolean mask — JIT-safe
+        mid_mask = (site_indices > i) & (site_indices < j)          # [n] bool
+        jw_bits  = jnp.where(mid_mask[None, :], occ_gpu, 0.0)      # [dim, n]
+        jw_sign  = (-1.0) ** jw_bits.sum(axis=-1)                   # [dim]
+
+        valid  = (col_idx >= 0) & mask_src
+        rho_ij = jnp.sum(
+            jnp.where(valid,
+                      jnp.conj(psi_gpu[col_idx]) * psi_gpu * jw_sign,
+                      0.0 + 0.0j)
+        )
+        return rho_ij
+
+    rho = jnp.diag(rho_diag).astype(jnp.complex128)
     for i in range(n):
         for j in range(i + 1, n):
-            mask = (basis_arr[:, i] == 1) & (basis_arr[:, j] == -1)
-            if not mask.any():
-                continue
-            sigma_v      = basis_arr[mask]
-            flipped_bits = np.array(basis_np)[mask]
-            new_bits     = (flipped_bits ^ (1 << i) ^ (1 << j)).astype(np.int64)
-            col_indices  = np.array([idx_map.get(int(b), -1) for b in new_bits])
-            valid        = col_indices >= 0
-            if not valid.any():
-                continue
-            rows_v   = np.where(mask)[0][valid]
-            rows_f   = col_indices[valid]
-            jw_signs = np.array([
-                (-1) ** int(((sigma_v[k, i+1:j] + 1) / 2).sum())
-                for k in range(sigma_v.shape[0])
-            ])[valid]
-            rho_ij    = (np.conj(psi[rows_f]) * psi[rows_v] * jw_signs).sum()
-            rho[i, j] = rho_ij
-            rho[j, i] = np.conj(rho_ij)
+            rij = rho_offdiag_ij(i, j)
+            rho = rho.at[i, j].set(rij)
+            rho = rho.at[j, i].set(jnp.conj(rij))
 
+    rho_np       = np.array(rho)
     mask_offdiag = ~np.eye(n, dtype=bool)
-    re_frob = np.linalg.norm(np.real(rho)[mask_offdiag])
-    im_frob = np.linalg.norm(np.imag(rho)[mask_offdiag])
-    ratio   = im_frob / (re_frob + 1e-12)
+    re_frob      = np.linalg.norm(np.real(rho_np)[mask_offdiag])
+    im_frob      = np.linalg.norm(np.imag(rho_np)[mask_offdiag])
+    ratio        = im_frob / (re_frob + 1e-12)
 
     print(f"\n[RDM @ convergence  {variant}-uCJ  N={n}  k={k_layers}]")
     print(f"  ‖Re(ρ_ij)‖_F = {re_frob:.6f}")
     print(f"  ‖Im(ρ_ij)‖_F = {im_frob:.6f}")
-    print(f"  Im/Re ratio  = {ratio:.6f}"
-          + ("  ← Im negligible" if ratio < 0.1 else
-             "  ← Im moderate"   if ratio < 0.5 else
-             "  ← Im significant"))
-
-    return dict(re_frob=re_frob, im_frob=im_frob, ratio=ratio, rho=rho)
+    print(f"  Im/Re ratio  = {ratio:.6f}")
+    return dict(re_frob=re_frob, im_frob=im_frob, ratio=ratio, rho=rho_np)
 
 
 # =============================================================================
 # SHARED QUANTUM STRUCTURES
 # =============================================================================
-def _build_quantum_structures(lattice, j1: float = J1, j2: float = J2) -> dict:
-    n          = lattice.n_sites
-    nn_edges   = lattice.nn_edges
-    nnn_edges  = lattice.nnn_edges
-    n_up       = get_n_up(n)
+def _build_quantum_structures(lattice, j1=J1, j2=J2):
+    n         = lattice.n_sites
+    nn_edges  = lattice.nn_edges
+    nnn_edges = lattice.nnn_edges
+    n_up      = get_n_up(n)
 
-    H_sp, basis, bindex = build_hamiltonian(n, n_up, nn_edges, nnn_edges,
-                                            j1=j1, j2=j2)
-    evals, evecs = eigsh(H_sp, k=1, which='SA')
-    e_exact      = float(evals[0])
-    psi_exact_np = evecs[:, 0] / np.linalg.norm(evecs[:, 0])
-    del H_sp, evals, evecs
+    # Matrix-free exact energy (no eigenvector stored)
+    e_exact, psi_exact_np, basis, bindex = get_ground_state(
+        n, n_up, nn_edges, nnn_edges, j1=j1, j2=j2)
 
-    h_rows, h_cols, h_vals = build_jax_hamiltonian(n, n_up, nn_edges, nnn_edges,
-                                                   j1=j1, j2=j2)
+    # JAX Hamiltonian — COO only
+    h_rows, h_cols, h_vals = build_jax_hamiltonian(
+        n, n_up, nn_edges, nnn_edges, j1=j1, j2=j2)
     apply_H = make_apply_H(h_rows, h_cols, h_vals, len(basis))
     del h_rows, h_cols, h_vals
 
-    srcs_flat_gpu, dsts_flat_gpu, row_ptr_np = build_givens_pairs(
+    # Givens pairs — padded for lax.scan
+    srcs_pad, dsts_pad, mask_pad = build_givens_pairs_padded(
         n, list(basis), bindex)
 
+    # Jastrow — scan-based, no occ matrix
     pair_i_np, pair_j_np, basis_bits_gpu = build_jastrow_indices(n, basis)
-    jastrow_phase_fn = _make_jastrow_phase_fn(pair_i_np, pair_j_np, basis_bits_gpu)
+    jastrow_phase_fn = _make_jastrow_phase_fn(
+        pair_i_np, pair_j_np, basis_bits_gpu)
 
-    psi_neel      = neel_state(n, n_up, list(basis), bindex)
-    psi_exact_gpu = _to_device(jnp.array(psi_exact_np, dtype=jnp.complex128))
+    psi_neel = neel_state(n, n_up, list(basis), bindex)
 
     return dict(
         n=n, n_up=n_up, nn_edges=nn_edges, nnn_edges=nnn_edges,
         basis=basis, bindex=bindex,
-        e_exact=e_exact, psi_exact_np=psi_exact_np, psi_exact_gpu=psi_exact_gpu,
+        e_exact=e_exact,
+        psi_exact_np = psi_exact_np, #psi_exact_np / psi_exact_gpu intentionally absent
         apply_H=apply_H,
-        srcs_flat_gpu=srcs_flat_gpu, dsts_flat_gpu=dsts_flat_gpu,
-        row_ptr_np=row_ptr_np, jastrow_phase_fn=jastrow_phase_fn,
+        srcs_pad=srcs_pad, dsts_pad=dsts_pad, mask_pad=mask_pad,
+        jastrow_phase_fn=jastrow_phase_fn,
         psi_neel=psi_neel,
     )
 
@@ -1138,10 +1180,9 @@ def run(
             e_tol=e_tol,
             e_exact=e_exact,
             psi_neel=qs["psi_neel"],
-            psi_exact_gpu=qs["psi_exact_gpu"],
-            srcs_flat_gpu=qs["srcs_flat_gpu"],
-            dsts_flat_gpu=qs["dsts_flat_gpu"],
-            row_ptr_np=qs["row_ptr_np"],
+            srcs_pad=qs["srcs_pad"],
+            dsts_pad=qs["dsts_pad"],
+            mask_pad=qs["mask_pad"],
             jastrow_phase_fn=qs["jastrow_phase_fn"],
             apply_H=qs["apply_H"],
             tracker=tracker,
@@ -1165,9 +1206,9 @@ def run(
             k_layers=best_k,
             psi_neel=qs["psi_neel"],
             psi_exact_np=psi_exact_np,
-            srcs_flat_gpu=qs["srcs_flat_gpu"],
-            dsts_flat_gpu=qs["dsts_flat_gpu"],
-            row_ptr_np=qs["row_ptr_np"],
+            srcs_flat_gpu=qs["srcs_pad"],
+            dsts_flat_gpu=qs["dsts_pad"],
+            row_ptr_np=qs["mask_pad"],
             jastrow_phase_fn=qs["jastrow_phase_fn"],
             n=n,
         )
@@ -1179,11 +1220,12 @@ def run(
             params=best_params,
             variant=variant,
             k_layers=best_k,
-            psi_neel=qs["psi_neel"],
-            srcs_flat_gpu=qs["srcs_flat_gpu"],
-            dsts_flat_gpu=qs["dsts_flat_gpu"],
-            row_ptr_np=qs["row_ptr_np"],
+            psi0=qs["psi_neel"],
+            srcs_pad=qs["srcs_pad"],
+            dsts_pad=qs["dsts_pad"],
+            mask_pad=qs["mask_pad"],
             jastrow_phase_fn=qs["jastrow_phase_fn"],
+            apply_H=qs["apply_H"],
             n=n,
             basis=qs["basis"],
             bindex=qs["bindex"],
@@ -1196,14 +1238,14 @@ def run(
         theta_gpu = _to_device(jnp.array(best_params, dtype=jnp.float64))
         _sfns = {
             're': lambda th: ucj_state_re(th, best_k, qs["psi_neel"], n_pair,
-                                          qs["srcs_flat_gpu"], qs["dsts_flat_gpu"],
-                                          qs["row_ptr_np"], qs["jastrow_phase_fn"]),
+                                          qs["srcs_pad"], qs["dsts_pad"],
+                                          qs["mask_pad"], qs["jastrow_phase_fn"]),
             'im': lambda th: ucj_state_im(th, best_k, qs["psi_neel"], n_pair,
-                                          qs["srcs_flat_gpu"], qs["dsts_flat_gpu"],
-                                          qs["row_ptr_np"], qs["jastrow_phase_fn"]),
+                                          qs["srcs_pad"], qs["dsts_pad"],
+                                          qs["mask_pad"], qs["jastrow_phase_fn"]),
             'g':  lambda th: ucj_state_g(th, best_k, qs["psi_neel"], n_pair,
-                                         qs["srcs_flat_gpu"], qs["dsts_flat_gpu"],
-                                         qs["row_ptr_np"], qs["jastrow_phase_fn"]),
+                                         qs["srcs_pad"], qs["dsts_pad"],
+                                          qs["mask_pad"], qs["jastrow_phase_fn"]),
         }
         psi_best = np.array(_sfns[variant](theta_gpu), dtype=np.complex128)
         psi_best /= np.linalg.norm(psi_best)
@@ -1215,13 +1257,20 @@ def run(
         timer.stop(f"{variant}_ee")
 
         # ── 4. Qiskit noiseless energy ────────────────────────────────────────
-        timer.start(f"{variant}_qiskit_energy")
-        E_pl = energy_noiseless_qiskit(
-            n=n, k_layers=best_k, variant=variant, params=best_params,
-            nn_edges=qs["nn_edges"], nnn_edges=qs["nnn_edges"], j1=j1, j2=j2)
-        timer.stop(f"{variant}_qiskit_energy")
+        try:
+            E_pl = energy_noiseless_qiskit(
+                n=n, k_layers=best_k, variant=variant,
+                params=best_params,
+                nn_edges=lattice.nn_edges, nnn_edges=lattice.nnn_edges,
+                j1=j1, j2=j2,
+            )
+        except Exception as exc:
+            warnings.warn(f"[Qiskit energy] failed: {exc}")
+            E_pl = float('nan')
+
         print(f"[{variant}-uCJ]  E_qiskit={E_pl:.10f}  "
               f"|ΔE_qiskit|={abs(E_pl - e_exact):.4e}")
+        
 
         # ── 5. Write outputs ──────────────────────────────────────────────────
         write_history_csv(
@@ -1273,6 +1322,7 @@ def schmidt_spectrum(
     basis: np.ndarray,
     n: int,
     cut: int | None = None,
+    n_sv: int = 32,
     zero_thresh: float = 1e-14,
 ) -> dict:
     if cut is None:
@@ -1281,16 +1331,49 @@ def schmidt_spectrum(
     basis_np = np.asarray(basis, dtype=np.int64)
     psi_np   = np.asarray(psi,   dtype=np.complex128)
 
-    lb, rb, li, ri = _split_basis(basis_np, n, cut)
+    mask_left = np.int64((1 << cut) - 1)
+    left_idx  = (basis_np & mask_left).astype(np.int32)
+    right_idx = (basis_np >> cut).astype(np.int32)
 
-    dim_l = 1 << cut
-    dim_r = 1 << (n - cut)
-    Psi   = np.zeros((dim_l, dim_r), dtype=np.complex128)
-    Psi[li, ri] = psi_np
+    nz       = np.abs(psi_np) > zero_thresh
+    psi_nz   = psi_np[nz]
+    left_nz  = left_idx[nz]
+    right_nz = right_idx[nz]
 
-    sv   = np.linalg.svd(Psi, compute_uv=False, full_matrices=False)
+    dim_l  = 1 << cut
+    dim_r  = 1 << (n - cut)
+    min_dim = min(dim_l, dim_r)
+
+    Psi_sp = coo_matrix(
+        (psi_nz, (left_nz, right_nz)),
+        shape=(dim_l, dim_r),
+        dtype=np.complex128,
+    ).tocsr()
+
+    # svds requires k strictly < min(shape) AND k <= nnz.
+    # If the matrix is small or nearly full-rank, dense SVD is cheaper anyway.
+    n_nonzero_rows = int((np.diff(Psi_sp.indptr) > 0).sum())
+    k = min(n_sv, n_nonzero_rows, min_dim - 1)
+
+    if k <= 0:
+        # Degenerate: only one nonzero row/col, entropy is zero
+        sv = np.array([1.0])
+    elif min_dim <= 2 or k >= min_dim - 1:
+        # Dense fallback for small matrices
+        sv = np.linalg.svd(Psi_sp.toarray(), compute_uv=False, full_matrices=False)
+    else:
+        try:
+            sv = svds(Psi_sp, k=k, which='LM', return_singular_vectors=False)
+            sv = np.sort(sv)[::-1]
+        except Exception:
+            # svds can still fail on pathological sparsity patterns; dense is safe
+            sv = np.linalg.svd(Psi_sp.toarray(), compute_uv=False, full_matrices=False)
+
     sv   = sv[sv > zero_thresh]
-    lam2 = sv ** 2
+    if len(sv) == 0:
+        sv = np.array([1.0])
+
+    lam2  = sv ** 2
     lam2 /= lam2.sum()
 
     s_vn     = float(-np.sum(lam2 * np.log(lam2 + 1e-300)))
@@ -1305,7 +1388,6 @@ def schmidt_spectrum(
         n_schmidt=len(lam2),
         cut=cut,
     )
-
 
 def schmidt_profile(psi, basis, n, cuts=None):
     if cuts is None:
@@ -1403,7 +1485,7 @@ def write_summary_file(lat, j1, j2, e_exact, results, variants,
             dE_cold = abs(cold_rec.E_final - e_exact)
             lines += [f"    E_final   = {cold_rec.E_final:.10f}",
                       f"    |ΔE|      = {dE_cold:.6e}",
-                      f"    fidelity  = {cold_rec.fidelity:.8f}",
+                      f"    variance  = {cold_rec.variance:.6e}",   # ← was fidelity
                       f"    nit / nfev= {cold_rec.nit} / {cold_rec.nfev}",
                       f"    wall_sec  = {cold_rec.wall_sec:.2f} s",
                       f"    converged = {cold_rec.converged}"]
@@ -1415,7 +1497,7 @@ def write_summary_file(lat, j1, j2, e_exact, results, variants,
             dE_app = abs(append_rec.E_final - e_exact)
             lines += [f"    E_final   = {append_rec.E_final:.10f}",
                       f"    |ΔE|      = {dE_app:.6e}",
-                      f"    fidelity  = {append_rec.fidelity:.8f}",
+                      f"    variance  = {append_rec.variance:.8f}",
                       f"    nit / nfev= {append_rec.nit} / {append_rec.nfev}",
                       f"    wall_sec  = {append_rec.wall_sec:.2f} s",
                       f"    converged = {append_rec.converged}"]
@@ -1431,7 +1513,6 @@ def write_summary_file(lat, j1, j2, e_exact, results, variants,
                   "  [ OVERALL BEST (JAX L-BFGS) ]",
                   f"    E_best      = {jax_best['E']:.10f}",
                   f"    |ΔE|        = {abs(jax_best['E'] - e_exact):.6e}",
-                  f"    fidelity    = {jax_best['fid']:.8f}",
                   f"    overlap     = {overlap:.8f}",
                   f"    E_qiskit    = {res['E_pl']:.10f}",
                   thin]
@@ -1457,7 +1538,7 @@ def write_summary_file(lat, j1, j2, e_exact, results, variants,
         def _rec(r):
             return (None if r is None else {
                 "E_final": r.E_final, "abs_dE": abs(r.E_final - e_exact),
-                "fidelity": r.fidelity, "nit": r.nit, "nfev": r.nfev,
+                 "nit": r.nit, "nfev": r.nfev,
                 "wall_sec": r.wall_sec, "converged": r.converged})
 
         json_data["variants"][variant] = {
@@ -1469,7 +1550,6 @@ def write_summary_file(lat, j1, j2, e_exact, results, variants,
                          "ratio":   rdm_conv["ratio"]},
             "jax_overall": {
                 "E": jax_best["E"], "abs_dE": abs(jax_best["E"] - e_exact),
-                "fidelity": jax_best["fid"],
                 "overlap":  res["overlap"]["overlap"],
                 "E_qiskit": res["E_pl"]},
         }
@@ -1496,7 +1576,7 @@ def write_history_csv(history, variant, lattice_name, n, j1, j2,
                   "S_vN", "S2",
                   "S_vN_exact", "S2_exact",
                   "dSvN_exact", "dS2_exact",
-                  "schmidt_gap", "schmidt_values"]
+                  "schmidt_gap", "schmidt_values", "variance", "dVar_layer"]
 
     enriched = []
     for row in history:
@@ -1567,7 +1647,6 @@ def write_entanglement_file(lat, j1, j2, e_exact, variant, jax_best,
         f"  J1={j1:.4f}   J2={j2:.4f}",
         f"  E_exact  = {e_exact:.10f}   E/site = {e_exact/n:.10f}",
         f"  E_best   = {jax_best['E']:.10f}   |ΔE| = {abs(jax_best['E']-e_exact):.4e}",
-        f"  fidelity = {jax_best['fid']:.8f}   k_opt = {k}",
         sep, "",
         "  [ EE PROFILE  (von Neumann & Rényi-2) ]",
         thin,
@@ -1633,7 +1712,6 @@ def write_entanglement_file(lat, j1, j2, e_exact, variant, jax_best,
         variant=variant, k_opt=k,
         e_exact=e_exact, e_ucj=jax_best['E'],
         abs_dE=abs(jax_best['E'] - e_exact),
-        fidelity=jax_best['fid'],
         ee_profile=ee_rows,
         mid_schmidt_ucj=dict(
             cut=mid_spec_ucj['cut'],
@@ -1709,11 +1787,11 @@ def write_circuit_summary(variant, lattice_name, n, j1, j2, k,
 if __name__ == '__main__':
     #from lattices import make_lattice   # user-supplied lattice module
 
-    n_list  = [8, 12, 16, 20]
+    n_list  = [6]
     J2_list = [0.0]
 
     for n in n_list:
         timer = Timer()
-        run(make_lattice('chain', L=n), variants=['re', 'im', 'g'],
+        run(make_lattice('chain', L=n), variants=['re'],
             j1=1.0, j2=0.0, timer=timer)
         timer.summary(f"chain N={n}")
