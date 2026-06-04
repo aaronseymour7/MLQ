@@ -24,7 +24,6 @@ Usage
 """
 from __future__ import annotations
 
-import argparse
 import warnings
 import time
 import functools
@@ -643,34 +642,41 @@ def print_comparison(results: dict):
 
 
 # =============================================================================
+# RUN CONFIG  — edit these values to change behaviour in Colab
+# =============================================================================
+RUN_N        = 8       # number of sites
+RUN_J1       = 1.0
+RUN_J2       = 0.0
+RUN_CHI      = 64      # DMRG max bond dimension
+RUN_LAYERS   = 1       # UCJ layers k
+RUN_VARIANT  = "re"    # UCJ variant: "re" | "im" | "g"
+RUN_FILTER_A = 4       # min filter pulses
+RUN_FILTER_B = 10      # max filter pulses
+RUN_UCJ      = True    # set False to skip UCJ
+RUN_DMRG     = True    # set False to skip DMRG
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
-def main():
-    parser = argparse.ArgumentParser(description="UCJ vs DMRG-MPS with energy filter")
-    parser.add_argument("--n",      type=int,   default=DEFAULT_N)
-    parser.add_argument("--j1",     type=float, default=DEFAULT_J1)
-    parser.add_argument("--j2",     type=float, default=DEFAULT_J2)
-    parser.add_argument("--chi",    type=int,   default=DEFAULT_CHI,
-                        help="DMRG max bond dim")
-    parser.add_argument("--layers", type=int,   default=DEFAULT_LAYERS,
-                        help="UCJ layers k")
-    parser.add_argument("--variant",type=str,   default=DEFAULT_VARIANT,
-                        help="UCJ variant: re | im | g")
-    parser.add_argument("--filter-a", type=int, default=FILTER_A,
-                        help="Min filter pulses")
-    parser.add_argument("--filter-b", type=int, default=FILTER_B,
-                        help="Max filter pulses")
-    parser.add_argument("--no-ucj",  action="store_true",
-                        help="Skip UCJ (useful if JAX unavailable)")
-    parser.add_argument("--no-dmrg", action="store_true",
-                        help="Skip DMRG (useful if TeNPy/mps-to-circuit unavailable)")
-    args = parser.parse_args()
 
-    n   = args.n
-    j1  = args.j1
-    j2  = args.j2
-    timer = Timer()
+# keep a reference before the bool variable shadows the function name
+_run_ucj_fn = run_ucj
 
+
+def main(
+    n        = RUN_N,
+    j1       = RUN_J1,
+    j2       = RUN_J2,
+    chi      = RUN_CHI,
+    layers   = RUN_LAYERS,
+    variant  = RUN_VARIANT,
+    filter_a = RUN_FILTER_A,
+    filter_b = RUN_FILTER_B,
+    run_ucj  = RUN_UCJ,
+    run_dmrg = RUN_DMRG,
+):
+    timer   = Timer()
     lattice = ChainLattice(n_sites=n, pbc=DEFAULT_PBC)
 
     print(f"\n{'='*60}")
@@ -685,33 +691,29 @@ def main():
         n, lattice.nn_edges, lattice.nnn_edges, j1, j2)
     timer.stop("ED full spectrum")
 
-    # Energy window for filter: use all eigenvalues
-    energies = evals.astype(np.float64)
-
-    # Total filter time heuristic: span of the spectrum
+    energies   = evals.astype(np.float64)
     e_span     = float(energies[-1] - energies[0])
     total_time = max(4.0, 2.0 * np.pi / max(energies[1] - energies[0], 1e-3))
     print(f"  Filter total_time = {total_time:.4f}  (spectrum span {e_span:.4f})")
 
-    # ── 2. UCJ ───────────────────────────────────────────────────────────────
     results_methods = {}
 
-    if not args.no_ucj and _JAX_OK:
-        print(f"\n[2a/4]  UCJ  (variant={args.variant}, k={args.layers}) ...")
+    # ── 2a. UCJ ──────────────────────────────────────────────────────────────
+    if run_ucj and _JAX_OK:
+        print(f"\n[2a/4]  UCJ  (variant={variant}, k={layers}) ...")
         timer.start("UCJ optimisation")
-        psi_ucj, coeff_ucj, fid_ucj_pre = run_ucj(
+        psi_ucj, coeff_ucj, fid_ucj_pre = _run_ucj_fn(
             lattice, evals, evecs, basis, idx_map,
-            j1, j2, variant=args.variant, k_layers=args.layers)
+            j1, j2, variant=variant, k_layers=layers)
         timer.stop("UCJ optimisation")
 
-        # pre-filter energy
         e_ucj = float(np.real(np.dot(coeff_ucj.conj(), energies * coeff_ucj)))
 
         print(f"\n  [UCJ filter] ...")
         timer.start("UCJ filter")
         csq_ucj = np.abs(coeff_ucj) ** 2
-        t_ucj, phi_ucj, fun_ucj = build_filter(
-            csq_ucj, energies, total_time, args.filter_a, args.filter_b)
+        t_ucj, phi_ucj, _ = build_filter(
+            csq_ucj, energies, total_time, filter_a, filter_b)
         fid_ucj_post = filtered_fidelity(t_ucj, phi_ucj, energies, coeff_ucj)
         timer.stop("UCJ filter")
         print(f"  [UCJ] post-filter fidelity = {fid_ucj_post:.8f}")
@@ -719,17 +721,17 @@ def main():
         results_methods["UCJ"] = dict(
             fid_pre=fid_ucj_pre, fid_post=fid_ucj_post,
             dE_pre=abs(e_ucj - evals[0]))
-    elif args.no_ucj:
-        print("\n[2a/4]  UCJ skipped (--no-ucj).")
+    elif not run_ucj:
+        print("\n[2a/4]  UCJ skipped (RUN_UCJ=False).")
     else:
         print("\n[2a/4]  UCJ skipped (JAX unavailable).")
 
-    # ── 3. DMRG-MPS circuit ──────────────────────────────────────────────────
-    if not args.no_dmrg and _TENPY_OK and _MPS2CIRC_OK and _QISKIT_OK:
-        print(f"\n[2b/4]  DMRG + MPS circuit  (chi_max={args.chi}) ...")
+    # ── 2b. DMRG-MPS circuit ─────────────────────────────────────────────────
+    if run_dmrg and _TENPY_OK and _MPS2CIRC_OK and _QISKIT_OK:
+        print(f"\n[2b/4]  DMRG + MPS circuit  (chi_max={chi}) ...")
         timer.start("DMRG + circuit")
         psi_dmrg, coeff_dmrg, fid_dmrg_pre = run_dmrg_mps(
-            lattice, evals, evecs, basis, j1, j2, chi_max=args.chi)
+            lattice, evals, evecs, basis, j1, j2, chi_max=chi)
         timer.stop("DMRG + circuit")
 
         e_dmrg_circ = float(np.real(np.dot(coeff_dmrg.conj(), energies * coeff_dmrg)))
@@ -737,8 +739,8 @@ def main():
         print(f"\n  [DMRG filter] ...")
         timer.start("DMRG filter")
         csq_dmrg = np.abs(coeff_dmrg) ** 2
-        t_dmrg, phi_dmrg, fun_dmrg = build_filter(
-            csq_dmrg, energies, total_time, args.filter_a, args.filter_b)
+        t_dmrg, phi_dmrg, _ = build_filter(
+            csq_dmrg, energies, total_time, filter_a, filter_b)
         fid_dmrg_post = filtered_fidelity(t_dmrg, phi_dmrg, energies, coeff_dmrg)
         timer.stop("DMRG filter")
         print(f"  [DMRG-MPS] post-filter fidelity = {fid_dmrg_post:.8f}")
@@ -746,16 +748,15 @@ def main():
         results_methods["DMRG-MPS circuit"] = dict(
             fid_pre=fid_dmrg_pre, fid_post=fid_dmrg_post,
             dE_pre=abs(e_dmrg_circ - evals[0]))
-    elif args.no_dmrg:
-        print("\n[2b/4]  DMRG skipped (--no-dmrg).")
+    elif not run_dmrg:
+        print("\n[2b/4]  DMRG skipped (RUN_DMRG=False).")
     else:
-        missing = []
-        if not _TENPY_OK:       missing.append("TeNPy")
-        if not _MPS2CIRC_OK:    missing.append("mps-to-circuit")
-        if not _QISKIT_OK:      missing.append("Qiskit")
+        missing = [lib for lib, ok in [("TeNPy", _TENPY_OK),
+                                        ("mps-to-circuit", _MPS2CIRC_OK),
+                                        ("Qiskit", _QISKIT_OK)] if not ok]
         print(f"\n[2b/4]  DMRG skipped (missing: {', '.join(missing)}).")
 
-    # ── 4. Print comparison ──────────────────────────────────────────────────
+    # ── 3. Comparison table ───────────────────────────────────────────────────
     print_comparison(dict(
         lattice=lattice.name,
         n=n, j1=j1, j2=j2,
