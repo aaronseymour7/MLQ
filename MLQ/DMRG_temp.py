@@ -33,6 +33,9 @@ import numpy as np
 from scipy.sparse import lil_matrix, csr_matrix
 from scipy.sparse.linalg import eigsh
 from qiskit import transpile
+
+from lattices import BaseLattice, make_lattice
+
 # ── TeNPy ────────────────────────────────────────────────────────────────────
 try:
     import tenpy
