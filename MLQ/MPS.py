@@ -641,40 +641,40 @@ def rdm_norms(psi_sector: np.ndarray, n: int,
 # =============================================================================
 # MAIN  run()
 # =============================================================================
-def run(n: int, j1: float = J1, j2: float = J2,
-        chi_max: int = DMRG_CHI_MAX, timer: Timer | None = None,
-        lattice_name: str | None = None):
+def run(lattice: BaseLattice, j1: float = J1, j2: float = J2,
+        chi_max: int = DMRG_CHI_MAX, timer: Timer | None = None):
 
-    if lattice_name is None:
-        lattice_name = f"chain L={n}"
+    nn_edges  = lattice.nn_edges
+    nnn_edges = lattice.nnn_edges
+    n         = lattice.n_sites
 
     W = 70
     print("\n" + "=" * W)
-    print(f"  DMRG run  |  {lattice_name}  N={n}  J1={j1}  J2={j2}  "
+    print(f"  DMRG run  |  {lattice.name}  N={n}  J1={j1}  J2={j2}  "
           f"chi_max={chi_max}")
     print("=" * W)
 
-    nn_edges, nnn_edges = chain_edges(n, pbc=PBC)
-
     # ── 1. Exact diagonalisation ─────────────────────────────────────────────
-    label = f"ED {lattice_name}"
+    label = f"ED {lattice.name}"
     if timer: timer.start(label)
     e_exact, psi_exact, basis, bindex = exact_ground_state(
         n, nn_edges, nnn_edges, j1, j2)
     if timer: timer.stop(label)
-    print(f"\n[Lanczos]  {lattice_name}  N={n}  J1={j1}  J2={j2}  "
+    print(f"\n[Lanczos]  {lattice.name}  N={n}  J1={j1}  J2={j2}  "
           f"E_exact={e_exact:.8f}  E/site={e_exact/n:.8f}")
 
     # ── 2. DMRG ──────────────────────────────────────────────────────────────
-    label = f"DMRG {lattice_name}"
+    label = f"DMRG {lattice.name}"
     if timer: timer.start(label)
     e_dmrg, psi_mps = run_dmrg(n, j1, j2, chi_max)
     if timer: timer.stop(label)
+
     mps_arrays = [psi_mps.get_B(i).to_ndarray() for i in range(n)]
-    ex_qc = mps_to_circuit(mps_arrays, method="exact", shape="lpr")
-    qc_info(ex_qc, 'exact')
-    apx_qc = mps_to_circuit(mps_arrays, method="approximate", shape="lpr", num_layers=10)
-    qc_info(apx_qc, 'Approximate')
+    ex_qc  = mps_to_circuit(mps_arrays, method="exact",       shape="lpr")
+    qc_info(ex_qc, "exact")
+    apx_qc = mps_to_circuit(mps_arrays, method="approximate", shape="lpr",
+                             num_layers=10)
+    qc_info(apx_qc, "Approximate")
     return ex_qc
 
 def qc_info(qc, circuit_type):
@@ -701,10 +701,9 @@ def qc_info(qc, circuit_type):
 if __name__ == '__main__':
     n_list  = [8]
     J2_list = [0.0]
-
     for n in n_list:
-        timer = Timer()
+        timer   = Timer()
+        lattice = make_lattice('chain', L=n)
         for j2 in J2_list:
-            run(n=n, j1=J1, j2=j2, chi_max=DMRG_CHI_MAX,
-                timer=timer, lattice_name=f"chain L={n}")
+            run(lattice, j1=J1, j2=j2, chi_max=DMRG_CHI_MAX, timer=timer)
         timer.summary(f"DMRG sweep  N={n}")
