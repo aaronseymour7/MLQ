@@ -71,7 +71,6 @@ from mps import (
 # Time filter: imports every public symbol
 from filter import (
     FilterBuilder,
-    append_filter,
     new_func_v4,
     new_func_v5,
     fixtimes,
