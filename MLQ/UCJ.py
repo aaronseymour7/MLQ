@@ -1,4 +1,4 @@
-# @title
+# @UCJ.py
 """
 UCJ (Unitary Cluster Jastrow) — optimised circuit builder.
 
@@ -23,7 +23,7 @@ import jax.numpy as jnp
 
 from qiskit import QuantumCircuit, transpile
 from qiskit.circuit.library import RXXGate, RYYGate, RZGate, CPhaseGate
-#from lattices import BaseLattice, make_lattice
+from lattices import BaseLattice, make_lattice
 
 # =============================================================================
 # GLOBAL CONFIG
