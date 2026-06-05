@@ -42,7 +42,7 @@ from qiskit.quantum_info import Statevector, SparsePauliOp
 from lattices import BaseLattice, make_lattice          # shared lattice layer
 
 # UCJ: imports every public symbol so nothing is re-implemented here
-from ucj_circuit import (
+from ucj import (
     _get_n_up,
     _build_basis,
     _build_hamiltonian_op,
@@ -57,7 +57,7 @@ from ucj_circuit import (
 )
 
 # DMRG: imports every public symbol so nothing is re-implemented here
-from dmrg_mps_circuit import (
+from mps import (
     build_hamiltonian   as dmrg_build_hamiltonian,
     build_basis         as dmrg_build_basis,
     HeisenbergLattice,
@@ -69,7 +69,7 @@ from dmrg_mps_circuit import (
 )
 
 # Time filter: imports every public symbol
-from time_filter import (
+from filter import (
     FilterBuilder,
     append_filter,
     new_func_v4,
@@ -79,6 +79,8 @@ from time_filter import (
     timesconstraints,
     probability_constraints,
     probability_constraintsb,
+    build_filter_circuit,
+    post_filter_fidelity_analytic,
 )
 
 # =============================================================================
