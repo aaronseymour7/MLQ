@@ -1,3 +1,4 @@
+# @title
 import numpy as np
 from scipy import optimize as opt
 import matplotlib.pyplot as plt
@@ -7,7 +8,9 @@ from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.synthesis import LieTrotter          # or SuzukiTrotter
 from qiskit.quantum_info import SparsePauliOp
 
-
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
 
 # ----------------------------------------------------------------------
 # Helper functions (unchanged)
@@ -309,41 +312,121 @@ class FilterBuilder:
 
 
 
-# --- Assume you already have: ---
-#   qc        : your existing QuantumCircuit (state prep, etc.)
-#   hamiltonian : your SparsePauliOp or Pauli Hamiltonian
-#   n_qubits  : number of qubits
 
-def append_filter(qc: QuantumCircuit, hamiltonian, times, phases, trotter_steps=1):
-    """
-    Append the filter pulse sequence to an existing Qiskit circuit.
+FIDELITY_THRESHOLD = 1e-6  # fun < this means fidelity > ~0.9999
+
+def _best_filter(results, sector_sv, psi_exact, evecs, evals):
+    """Pick filter with highest postsel_prob among near-perfect fidelity results."""
+    good = [r for r in results if r["fun"] < FIDELITY_THRESHOLD]
+    if not good:
+        good = results  # fallback: take best available
     
-    Each pulse is:
-      1. Hamiltonian time evolution for `times[i]`
-      2. Global phase rotation by `phases[i]`
-    """
-    n = qc.num_qubits
+    def postsel_prob(r):
+        _, prob = post_filter_fidelity_analytic(
+            sector_sv, psi_exact, evecs, evals,
+            r["times"], r["phases"],
+        )
+        return prob
+    
+    return max(good, key=postsel_prob)
 
+
+
+
+def build_filter_circuit(
+    state_circuit: QuantumCircuit,   # your UCJ or DMRG circuit
+    hamiltonian: SparsePauliOp,
+    times: np.ndarray,
+    phases: np.ndarray,
+    trotter_steps: int = 1,
+) -> QuantumCircuit:
+    """
+    Append the Hadamard-test filter to an existing state circuit.
+    
+    Returns a circuit with 1 ancilla qubit prepended.
+    Ancilla qubit index = 0; system qubits = 1..n.
+    
+    Postselect all ancilla measurements on 0 to get the filtered state.
+    """
+    n = state_circuit.num_qubits
+    
+    anc = QuantumRegister(1, 'anc')
+    sys = QuantumRegister(n, 'sys')
+    cr  = ClassicalRegister(len(times), 'postsel')
+    
+    qc = QuantumCircuit(anc, sys, cr)
+    
+    # Prepare system in trial state
+    qc.compose(state_circuit, qubits=list(range(1, n + 1)), inplace=True)
+    
     for i, (t, phi) in enumerate(zip(times, phases)):
-        # --- Step 1: time evolution e^{-i H t} ---
-        evo_gate = PauliEvolutionGate(
+        # Step 1: ancilla to |+>
+        qc.h(0)
+        
+        # Step 2: controlled-e^{-iHt} — ancilla controls system evolution
+        evo = PauliEvolutionGate(
             hamiltonian,
             time=float(t),
-            synthesis=LieTrotter(reps=trotter_steps)
+            synthesis=LieTrotter(reps=trotter_steps),
         )
-        qc.append(evo_gate, range(n))
-
-        # --- Step 2: phase rotation R(phi) ---
-        # Global phase isn't observable, so apply as relative phase
-        # on your "ground state" qubit/subspace.
-        # Option A — if your GS lives in the |0...0⟩ subspace:
-        qc.p(2 * float(phi), 0)          # single-qubit phase on qubit 0
-
-        # Option B — if you need a full global phase (rarely needed):
-        # qc.global_phase += float(phi)
-
-        qc.barrier(label=f"pulse {i}")
-
+        # Make it controlled on ancilla qubit 0
+        c_evo = evo.control(1)
+        qc.append(c_evo, [0] + list(range(1, n + 1)))
+        
+        # Step 3: Rz(2*phi) on ancilla — this is the phase kick
+        qc.rz(2 * float(phi), 0)
+        
+        # Step 4: H on ancilla
+        qc.h(0)
+        
+        # Step 5: measure ancilla, postselect on 0
+        qc.measure(0, i)
+        
+        # Reset ancilla for next pulse (only matters in hardware;
+        # for simulation you branch on measurement outcome)
+        qc.reset(0)
+        
+        qc.barrier()
+    
     return qc
 
 
+
+
+def post_filter_fidelity_analytic(
+    sector_sv: np.ndarray,         # normalized sector statevector
+    psi_exact: np.ndarray,         # exact GS in sector basis
+    evecs: np.ndarray,             # eigenvectors from eigsh, shape (dim, k)
+    evals: np.ndarray,             # eigenvalues, shape (k,)
+    times: np.ndarray,
+    phases: np.ndarray,
+) -> tuple[float, float]:
+    """
+    Returns (fidelity_with_GS, postselection_probability).
+    This is the honest analytic prediction of what the Hadamard-test 
+    circuit produces when all ancillas are postselected on |0>.
+    """
+    # Complex overlaps — no .real truncation
+    coeffs = evecs.conj().T @ sector_sv          # shape (k,)
+    
+    # Cosine filter weights per eigenstate
+    weights = np.ones(len(evals), dtype=float)
+    for t, phi in zip(times, phases):
+        weights *= np.cos(evals * t + phi)
+    
+    # Filtered (unnormalized) coefficients
+    filtered = coeffs * weights                   # shape (k,)
+    
+    # Postselection probability = norm^2 of filtered state
+    # (this is your Lambda^2 from the paper)
+    prob = float(np.real(np.dot(filtered.conj(), filtered)))
+    
+    if prob < 1e-14:
+        return 0.0, prob
+    
+    # Normalized filtered state in sector basis
+    filtered_sv = evecs @ filtered
+    filtered_sv /= np.sqrt(prob)
+    
+    fidelity = float(np.abs(np.dot(psi_exact.conj(), filtered_sv)) ** 2)
+    return fidelity, prob
