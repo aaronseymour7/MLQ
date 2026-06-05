@@ -1,4 +1,4 @@
-# @title
+# @filter.py
 import numpy as np
 from scipy import optimize as opt
 import matplotlib.pyplot as plt
