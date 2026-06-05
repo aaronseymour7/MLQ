@@ -1,3 +1,4 @@
+# @title
 """
 UCJ (Unitary Cluster Jastrow) — optimised circuit builder.
 
@@ -22,7 +23,7 @@ import jax.numpy as jnp
 
 from qiskit import QuantumCircuit, transpile
 from qiskit.circuit.library import RXXGate, RYYGate, RZGate, CPhaseGate
-from lattices import BaseLattice, make_lattice
+#from lattices import BaseLattice, make_lattice
 
 # =============================================================================
 # GLOBAL CONFIG
@@ -364,7 +365,7 @@ def build_ucj(
     gate_counts : dict[str, int]
     depth       : int
     """
-    n = lattice.n_sites()
+    n = lattice.n_sites
     
     if pairs is None:
         pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
@@ -420,7 +421,7 @@ def build_ucj(
 
     return tqc, gate_counts, depth
 
-
+'''
 # =============================================================================
 # DEMO
 # =============================================================================
@@ -429,3 +430,4 @@ if __name__ == "__main__":
 
     tqc, counts, depth = build_ucj(lattice, j1=1.0, j2=0.0,
                                    variant="re", k_layers=1)
+'''
