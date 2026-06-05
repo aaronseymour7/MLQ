@@ -86,11 +86,11 @@ from time_filter import (
 # =============================================================================
 
 J1       = 1.0
-J2       = 0.0
+J2       = 0.7
 
 # Define the lattice once; both methods share it.
 # Change the arguments below to switch geometry / system size.
-N_SITES  = 8
+N_SITES  = 12
 LATTICE: BaseLattice = make_lattice("chain", L=N_SITES)
 
 # Target gate basis for transpilation and gate-count reporting
@@ -229,31 +229,18 @@ def _coeffs_sq_in_eigenbasis(
     j1: float,
     j2: float,
     n_eigvals: int = 20,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Decompose psi_trial (sector basis) into the lowest n_eigvals eigenstates.
-
-    Returns
-    -------
-    evals     : shape (k,)  — eigenvalues sorted ascending
-    coeffs_sq : shape (k,)  — |<E_k|psi_trial>|^2
-    coeffs    : shape (k,)  — real projection <E_k|psi_trial> (signed amplitudes
-                              in the eigenbasis; same length as evals so that
-                              FilterBuilder.apply_filter can be called directly
-                              with (times, phases, evals, coeffs))
-    """
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:  # ← added evecs
     n    = lattice.n_sites
     n_up = _get_n_up(n)
     op, basis, _ = _build_hamiltonian_op(
         n, n_up, lattice.nn_edges, lattice.nnn_edges, j1, j2)
-    k    = min(n_eigvals, len(basis) - 1)
+    k = min(n_eigvals, len(basis) - 1)
     evals, evecs = eigsh(op, k=k, which="SA", tol=1e-10, maxiter=20_000)
     order  = np.argsort(evals.real)
     evals  = evals[order].real
     evecs  = evecs[:, order]
-    # psi_trial is real (sector basis from Lanczos); keep real projection
-    coeffs = (evecs.T @ psi_trial).real    # shape (k,)
-    return evals, np.abs(coeffs) ** 2, coeffs
+    coeffs = evecs.conj().T @ psi_trial   # ← was (evecs.T @ ...).real
+    return evals, np.abs(coeffs) ** 2, coeffs, evecs
 
 
 # =============================================================================
@@ -304,40 +291,29 @@ def run_ucj_comparison(
     energies: np.ndarray,
     gaps: np.ndarray,
 ) -> dict:
-    """
-    Build the UCJ circuit, compute pre-/post-filter fidelities, and append
-    the time filter.
 
-    Returns a result dict with keys:
-        qc_raw, qc_filtered, fidelity_pre, fidelity_post, gate_counts_raw,
-        gate_counts_filtered
-    """
     _header("UCJ circuit construction + optimisation")
     n = lattice.n_sites
 
-    # ── 1. Build and transpile UCJ circuit ────────────────────────────────────
     tqc_ucj, gate_counts_ucj, depth_ucj = build_ucj(
-        lattice, j1, j2,
-        variant=VARIANT,
-        k_layers=K_LAYERS,
+        lattice, j1, j2, variant=VARIANT, k_layers=K_LAYERS,
         basis_gates=TARGET_BASIS,
     )
 
-    # ── 2. Pre-filter fidelity ────────────────────────────────────────────────
     _header("UCJ — pre-filter fidelity")
     sv_ucj      = _statevector_from_circuit(tqc_ucj)
     fid_pre_ucj = _fidelity_with_sector(sv_ucj, psi_exact, basis, n)
     print(f"  UCJ fidelity (pre-filter)  = {fid_pre_ucj:.8f}")
 
-    # ── 3. Build filter using Lanczos overlaps ────────────────────────────────
     _header("UCJ — time filter optimisation")
     sector_sv_ucj = sv_ucj[basis]
     norm          = np.linalg.norm(sector_sv_ucj)
     sector_sv_ucj = sector_sv_ucj / (norm + 1e-30)
     overlap_ucj   = float(np.abs(np.dot(np.conj(psi_exact), sector_sv_ucj)))
 
-    evals_filter, coeffs_sq_ucj, coeffs_ucj = _coeffs_sq_in_eigenbasis(
-        sector_sv_ucj, lattice, j1, j2)
+    # ── CHANGE 1: unpack the new 4th return value ──────────────────────────
+    evals_filter, coeffs_sq_ucj, coeffs_ucj, evecs_filter = \
+        _coeffs_sq_in_eigenbasis(sector_sv_ucj, lattice, j1, j2)
 
     fb_ucj = FilterBuilder(
         total_time = FILTER_TOTAL_TIME,
@@ -350,35 +326,30 @@ def run_ucj_comparison(
         coeffs_sq  = coeffs_sq_ucj,
     )
     filter_results_ucj = fb_ucj.build(method=FILTER_METHOD)
-
-    # Pick best filter result (lowest objective value)
-    best_ucj = min(filter_results_ucj, key=lambda r: r["fun"])
+    best_ucj = _best_filter(filter_results_ucj, sector_sv_ucj, psi_exact, evecs_filter, evals_filter)
     print(f"\n  Best filter:  ntimes={best_ucj['ntimes']}  "
           f"fun={best_ucj['fun']:.4e}  success={best_ucj['success']}")
 
-    # ── 4. Append filter to circuit ───────────────────────────────────────────
-    qc_ucj_filtered = tqc_ucj.copy()
-    qc_ucj_filtered = append_filter(
-        qc_ucj_filtered,
-        hamiltonian_pauli,
-        best_ucj["times"],
-        best_ucj["phases"],
-        trotter_steps=TROTTER_STEPS,
-    )
+    # ── Step 4 unchanged — keep the Hadamard-test circuit for gate counts ──
     qc_ucj_filtered = transpile(
-        qc_ucj_filtered, basis_gates=TARGET_BASIS, optimization_level=0)
-
-    # ── 5. Post-filter fidelity ───────────────────────────────────────────────
-    # apply_filter operates in the k-dimensional eigenbasis; pass coeffs_ucj
-    # (length k) not sector_sv_ucj (length = full sector dim).
-    _header("UCJ — post-filter fidelity")
-    f0_ucj, _ = FilterBuilder.apply_filter(
-        best_ucj["times"], best_ucj["phases"],
-        evals_filter, coeffs_ucj,
+        build_filter_circuit(
+            tqc_ucj, hamiltonian_pauli,
+            best_ucj["times"], best_ucj["phases"],
+            trotter_steps=TROTTER_STEPS,
+        ),
+        basis_gates=TARGET_BASIS,
+        optimization_level=0,
     )
-    # f0_ucj[0] is the GS component after filtering (eigenbasis index 0 = GS).
-    fid_post_ucj = float(f0_ucj[0] ** 2)
-    print(f"  UCJ fidelity (post-filter) = {fid_post_ucj:.8f}")
+    
+    # ── CHANGE 2: analytic post-filter fidelity (honest Hadamard-test prediction)
+    _header("UCJ — post-filter fidelity (analytic, Hadamard test)")
+    fid_post_ucj, postsel_prob = post_filter_fidelity_analytic(
+        sector_sv_ucj, psi_exact,
+        evecs_filter, evals_filter,
+        best_ucj["times"], best_ucj["phases"],
+    )
+    print(f"  UCJ fidelity (post-filter, analytic)  = {fid_post_ucj:.8f}")
+    print(f"  Postselection probability              = {postsel_prob:.6f}")
 
     gate_counts_filtered_ucj = dict(qc_ucj_filtered.count_ops())
 
@@ -389,8 +360,8 @@ def run_ucj_comparison(
         "fidelity_post":        fid_post_ucj,
         "gate_counts_raw":      gate_counts_ucj,
         "gate_counts_filtered": gate_counts_filtered_ucj,
+        "postsel_prob":         postsel_prob
     }
-
 
 # =============================================================================
 # ── DMRG RUN ──────────────────────────────────────────────────────────────────
@@ -407,19 +378,6 @@ def run_dmrg_comparison(
     energies: np.ndarray,
     gaps: np.ndarray,
 ) -> dict:
-    """
-    Run DMRG, build exact + approximate MPS circuits, compute fidelities,
-    append time filter.
-
-    Returns a result dict with keys:
-        qc_exact_raw, qc_approx_raw,
-        qc_exact_filtered, qc_approx_filtered,
-        fidelity_exact_pre, fidelity_approx_pre,
-        fidelity_exact_post, fidelity_approx_post,
-        max_bond_dim, dmrg_energy,
-        gate_counts_exact_raw, gate_counts_approx_raw,
-        gate_counts_exact_filtered, gate_counts_approx_filtered,
-    """
     _header("DMRG ground state")
     n = lattice.n_sites
 
@@ -437,7 +395,7 @@ def run_dmrg_comparison(
 
     # ── 3. Pre-filter fidelities ──────────────────────────────────────────────
     _header("DMRG — pre-filter fidelities")
-    sv_exact = _statevector_from_circuit(exact_qc)
+    sv_exact  = _statevector_from_circuit(exact_qc)
     sv_approx = _statevector_from_circuit(approx_qc)
 
     fid_exact_pre  = _fidelity_with_sector(sv_exact,  psi_exact, basis, n)
@@ -445,90 +403,102 @@ def run_dmrg_comparison(
     print(f"  DMRG exact  fidelity (pre-filter)  = {fid_exact_pre:.8f}")
     print(f"  DMRG approx fidelity (pre-filter)  = {fid_approx_pre:.8f}")
 
-    # ── 4. Build filter (shared by both DMRG circuits) ────────────────────────
+    # ── 4. Sector statevectors (normalised) ───────────────────────────────────
+    sector_sv_exact = sv_exact[basis]
+    sector_sv_exact = sector_sv_exact / (np.linalg.norm(sector_sv_exact) + 1e-30)
+
+    sector_sv_approx = sv_approx[basis]
+    sector_sv_approx = sector_sv_approx / (np.linalg.norm(sector_sv_approx) + 1e-30)
+
+    # ── 5. Filter for exact circuit ───────────────────────────────────────────
     _header("DMRG — time filter optimisation  (exact MPS circuit)")
-    sector_sv_dmrg = sv_exact[basis]
-    norm_dmrg      = np.linalg.norm(sector_sv_dmrg)
-    sector_sv_dmrg = sector_sv_dmrg / (norm_dmrg + 1e-30)
-    overlap_dmrg   = float(np.abs(np.dot(np.conj(psi_exact), sector_sv_dmrg)))
+    evals_exact, coeffs_sq_exact, coeffs_exact, evecs_exact = \
+        _coeffs_sq_in_eigenbasis(sector_sv_exact, lattice, j1, j2)
 
-    evals_filter, coeffs_sq_dmrg, coeffs_dmrg = _coeffs_sq_in_eigenbasis(
-        sector_sv_dmrg, lattice, j1, j2)
-
-    fb_dmrg = FilterBuilder(
+    fb_exact = FilterBuilder(
         total_time = FILTER_TOTAL_TIME,
-        energies   = evals_filter,
-        overlap    = overlap_dmrg,
+        energies   = evals_exact,
+        overlap    = float(np.abs(np.dot(np.conj(psi_exact), sector_sv_exact))),
         a          = FILTER_A,
         b          = FILTER_B,
         maxiter    = FILTER_MAXITER,
         ftol       = FILTER_FTOL,
-        coeffs_sq  = coeffs_sq_dmrg,
+        coeffs_sq  = coeffs_sq_exact,
     )
-    filter_results_dmrg = fb_dmrg.build(method=FILTER_METHOD)
-    best_dmrg = min(filter_results_dmrg, key=lambda r: r["fun"])
-    print(f"\n  Best filter:  ntimes={best_dmrg['ntimes']}  "
-          f"fun={best_dmrg['fun']:.4e}  success={best_dmrg['success']}")
+    filter_results_exact = fb_exact.build(method=FILTER_METHOD)
+    best_exact = _best_filter(filter_results_exact, sector_sv_exact, psi_exact, evecs_exact, evals_exact)
+    print(f"\n  Best filter:  ntimes={best_exact['ntimes']}  "
+          f"fun={best_exact['fun']:.4e}  success={best_exact['success']}")
 
-    # ── 5. Append filter to both circuits ─────────────────────────────────────
-    qc_exact_filtered  = exact_qc.copy()
-    qc_approx_filtered = approx_qc.copy()
+    # ── 6. Filter for approx circuit (its own optimisation) ───────────────────
+    _header("DMRG — time filter optimisation  (approx MPS circuit)")
+    evals_approx, coeffs_sq_approx, coeffs_approx, evecs_approx = \
+        _coeffs_sq_in_eigenbasis(sector_sv_approx, lattice, j1, j2)
 
-    qc_exact_filtered = append_filter(
-        qc_exact_filtered, hamiltonian_pauli,
-        best_dmrg["times"], best_dmrg["phases"],
-        trotter_steps=TROTTER_STEPS,
+    fb_approx = FilterBuilder(
+        total_time = FILTER_TOTAL_TIME,
+        energies   = evals_approx,
+        overlap    = float(np.abs(np.dot(np.conj(psi_exact), sector_sv_approx))),
+        a          = FILTER_A,
+        b          = FILTER_B,
+        maxiter    = FILTER_MAXITER,
+        ftol       = FILTER_FTOL,
+        coeffs_sq  = coeffs_sq_approx,
     )
-    qc_approx_filtered = append_filter(
-        qc_approx_filtered, hamiltonian_pauli,
-        best_dmrg["times"], best_dmrg["phases"],
-        trotter_steps=TROTTER_STEPS,
-    )
-    qc_exact_filtered  = transpile(
-        qc_exact_filtered,  basis_gates=TARGET_BASIS, optimization_level=0)
-    qc_approx_filtered = transpile(
-        qc_approx_filtered, basis_gates=TARGET_BASIS, optimization_level=0)
+    filter_results_approx = fb_approx.build(method=FILTER_METHOD)
+    best_approx = _best_filter(filter_results_approx, sector_sv_approx, psi_exact, evecs_approx, evals_approx)    
+    print(f"\n  Best filter:  ntimes={best_approx['ntimes']}  "
+          f"fun={best_approx['fun']:.4e}  success={best_approx['success']}")
 
-    # ── 6. Post-filter fidelities ─────────────────────────────────────────────
-    _header("DMRG — post-filter fidelities")
-    # apply_filter needs eigenbasis-length arrays, not full sector vectors.
-    # exact circuit: use coeffs_dmrg already computed above.
-    f0_dmrg_exact, _ = FilterBuilder.apply_filter(
-        best_dmrg["times"], best_dmrg["phases"],
-        evals_filter, coeffs_dmrg,
-    )
+    # ── 7. Build Hadamard-test filter circuits ────────────────────────────────
+    qc_exact_filtered  = transpile(build_filter_circuit(
+        exact_qc, hamiltonian_pauli,
+        best_exact["times"], best_exact["phases"],
+        trotter_steps=TROTTER_STEPS),
+        basis_gates=TARGET_BASIS,
+        optimization_level=0,)
+    
+    qc_approx_filtered = transpile(build_filter_circuit(
+        approx_qc, hamiltonian_pauli,
+        best_approx["times"], best_approx["phases"],
+        trotter_steps=TROTTER_STEPS),basis_gates=TARGET_BASIS,
+        optimization_level=0,)
 
-    # approx circuit: project into the same eigenbasis.
-    sector_sv_approx = sv_approx[basis]
-    norm_approx      = np.linalg.norm(sector_sv_approx)
-    sector_sv_approx = sector_sv_approx / (norm_approx + 1e-30)
-    _, _, coeffs_approx = _coeffs_sq_in_eigenbasis(
-        sector_sv_approx, lattice, j1, j2)
-    f0_dmrg_approx, _ = FilterBuilder.apply_filter(
-        best_dmrg["times"], best_dmrg["phases"],
-        evals_filter, coeffs_approx,
+    # ── 8. Post-filter fidelities (analytic, Hadamard-test prediction) ────────
+    _header("DMRG — post-filter fidelities (analytic, Hadamard test)")
+    fid_exact_post, prob_exact = post_filter_fidelity_analytic(
+        sector_sv_exact, psi_exact,
+        evecs_exact, evals_exact,
+        best_exact["times"], best_exact["phases"],
     )
+    print(f"  DMRG exact  fidelity (post-filter) = {fid_exact_post:.8f}  "
+          f"postsel_prob={prob_exact:.6f}")
 
-    fid_exact_post  = float(f0_dmrg_exact[0]  ** 2)
-    fid_approx_post = float(f0_dmrg_approx[0] ** 2)
-    print(f"  DMRG exact  fidelity (post-filter) = {fid_exact_post:.8f}")
-    print(f"  DMRG approx fidelity (post-filter) = {fid_approx_post:.8f}")
+    fid_approx_post, prob_approx = post_filter_fidelity_analytic(
+        sector_sv_approx, psi_exact,
+        evecs_approx, evals_approx,
+        best_approx["times"], best_approx["phases"],
+    )
+    print(f"  DMRG approx fidelity (post-filter) = {fid_approx_post:.8f}  "
+          f"postsel_prob={prob_approx:.6f}")
 
     return {
-        "qc_exact_raw":              exact_qc,
-        "qc_approx_raw":             approx_qc,
-        "qc_exact_filtered":         qc_exact_filtered,
-        "qc_approx_filtered":        qc_approx_filtered,
-        "fidelity_exact_pre":        fid_exact_pre,
-        "fidelity_approx_pre":       fid_approx_pre,
-        "fidelity_exact_post":       fid_exact_post,
-        "fidelity_approx_post":      fid_approx_post,
-        "max_bond_dim":              max_bond_dim,
-        "dmrg_energy":               dmrg_E,
-        "gate_counts_exact_raw":     dict(exact_qc.count_ops()),
-        "gate_counts_approx_raw":    dict(approx_qc.count_ops()),
-        "gate_counts_exact_filtered":  dict(qc_exact_filtered.count_ops()),
-        "gate_counts_approx_filtered": dict(qc_approx_filtered.count_ops()),
+        "qc_exact_raw":               exact_qc,
+        "qc_approx_raw":              approx_qc,
+        "qc_exact_filtered":          qc_exact_filtered,
+        "qc_approx_filtered":         qc_approx_filtered,
+        "fidelity_exact_pre":         fid_exact_pre,
+        "fidelity_approx_pre":        fid_approx_pre,
+        "fidelity_exact_post":        fid_exact_post,
+        "fidelity_approx_post":       fid_approx_post,
+        "postsel_prob_exact":         prob_exact,
+        "postsel_prob_approx":        prob_approx,
+        "max_bond_dim":               max_bond_dim,
+        "dmrg_energy":                dmrg_E,
+        "gate_counts_exact_raw":      dict(exact_qc.count_ops()),
+        "gate_counts_approx_raw":     dict(approx_qc.count_ops()),
+        "gate_counts_exact_filtered": dict(qc_exact_filtered.count_ops()),
+        "gate_counts_approx_filtered":dict(qc_approx_filtered.count_ops()),
     }
 
 
@@ -579,6 +549,18 @@ def print_summary(
                          f"{dmrg_res['fidelity_approx_pre']:.8f}"))
     print(row_fmt.format("DMRG approx fidelity  post-filter",
                          f"{dmrg_res['fidelity_approx_post']:.8f}"))
+    
+    print(row_fmt.format("UCJ  postselection probability",
+                     f"{ucj_res['postsel_prob']:.6f}"))
+    print(row_fmt.format("UCJ  shots per postselection",
+                        f"{int(np.ceil(1/ucj_res['postsel_prob']))}"))
+    print()
+    print(row_fmt.format("DMRG exact  postsel. probability",
+                        f"{dmrg_res['postsel_prob_exact']:.6f}"))
+    print(row_fmt.format("DMRG approx postsel. probability",
+                        f"{dmrg_res['postsel_prob_approx']:.6f}"))
+    print(row_fmt.format("DMRG approx shots per postselection",
+                        f"{int(np.ceil(1/dmrg_res['postsel_prob_approx']))}"))
     print()
     print(_DIVIDER)
 
