@@ -1,6 +1,6 @@
-# @title
+# @MPS.py
 """
-dmrg_mps_circuit.py
+
 ====================
 DMRG ground state via TeNPy → Qiskit circuit + Hamiltonian + basis.
 
