@@ -1,36 +1,4 @@
 """
-====================
-DMRG ground state via TeNPy -> Qiskit circuit + Hamiltonian + basis,
-with resource accounting aimed at EARLY FAULT-TOLERANT hardware.
-
-The TeNPy model is driven entirely by a BaseLattice object so that
-arbitrary geometries (chain, square, triangular, honeycomb, kagome, ...)
-are handled correctly. The coupling topology comes from
-  lattice.nn_edges   -> J1 terms
-  lattice.nnn_edges  -> J2 terms
-and the TeNPy lattice object (lattice.tenpy_lat) is used directly so
-that the MPS bond structure respects the canonical MPS ordering that
-TeNPy chose when it built the lattice.
-
-This version:
-  * drops the brick-wall "approximate" MPS-to-circuit method entirely --
-    we only ever compile the EXACT MPS isometry circuit. For an EFT
-    poster the interesting question is "what does it cost to prepare
-    the state exactly", not "how good is a depth-truncated heuristic".
-  * reports resources in EFT-relevant terms: Clifford (CX, H, S, Sdg)
-    vs. non-Clifford (RZ) counts/depth, plus an estimated T-count from
-    the RZ count via the standard Clifford+T synthesis bound, since RZ
-    angles are exactly the gates that need to be synthesized out of
-    Clifford+T on a fault-tolerant device.
-  * closes the loop: samples the statevector of the compiled circuit
-    and computes <H> directly, compared against the DMRG energy, so
-    "we compiled a state" becomes "we prepared a state and verified it
-    reproduces the target energy".
-  * provides sweep_j2_ratio() and sweep_system_size() to generate the
-    two headline poster plots: resource cost / entanglement vs J2/J1
-    (crossing the gapless -> dimerized transition), and resource cost /
-    energy-error vs system size at fixed bond dimension.
-
 Returns
 -------
   run() -> (exact_qc, H_sparse, basis, info)
@@ -51,6 +19,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 import numpy as np
 from scipy.sparse import lil_matrix, csr_matrix
+from scipy.sparse.linalg import eigsh, LinearOperator
 from qiskit import transpile
 from qiskit.quantum_info import Statevector
 
@@ -98,6 +67,10 @@ TWO_QUBIT_GATES    = {"cx"}
 
 # Default synthesis precision used for the T-count estimate (per RZ gate).
 RZ_SYNTHESIS_EPS = 1e-3
+
+# Default number of independent re-fits of the approximate circuit per
+# n_layers value, used by sweep_n_layers() for research-grade statistics.
+DEFAULT_N_TRIALS = 100
 
 
 # =============================================================================
@@ -159,6 +132,7 @@ def circuit_resource_report(
     qc: QuantumCircuit,
     label: str,
     rz_eps: float = RZ_SYNTHESIS_EPS,
+    verbose: bool = True,
 ) -> ResourceReport:
     """Transpile qc to BASIS_GATES and extract EFT-relevant resource counts."""
     qc_t = transpile(qc, basis_gates=BASIS_GATES, optimization_level=0)
@@ -186,7 +160,8 @@ def circuit_resource_report(
         t_count_estimate=t_count_estimate,
         rz_synthesis_eps=rz_eps,
     )
-    report.print_summary()
+    if verbose:
+        report.print_summary()
     return report
 
 
@@ -239,7 +214,10 @@ def build_hamiltonian(
                         H[row, col] += 0.5 * j
 
     return csr_matrix(H), basis
-
+def _build_basis(n: int) -> np.ndarray:
+    n_up = n // 2
+    return np.array([b for b in range(1 << n) if bin(b).count('1') == n_up],
+                    dtype=np.int64) 
 def exact_ground_state(
     lattice: BaseLattice,
     j1: float = J1,
@@ -401,8 +379,8 @@ def run_dmrg(
         'mixer_params': {'amplitude': 1e-4, 'decay': 1.2, 'disable_after': 50},
     })
     E, psi = eng.run()
-    print(f"[DMRG]  lattice={lattice.name}  E={E:.10f}  "
-          f"E/site={E/n:.10f}  chi_max={max(psi.chi)}")
+    #print(f"[DMRG]  lattice={lattice.name}  E={E:.10f}  "
+    #      f"E/site={E/n:.10f}  chi_max={max(psi.chi)}")
     return E, psi
 
 
@@ -449,26 +427,25 @@ def mps_to_approx_circuit(psi_mps: MPS, n: int, n_layers: int) -> QuantumCircuit
     Build a brick-wall approximate circuit for the MPS using a fixed number
     of two-qubit layers. Fewer layers = shallower circuit but lower fidelity.
     mps_to_circuit expects tensors in 'lpr' shape (left-bond, physical, right-bond).
+
+    NOTE ON STOCHASTICITY: the underlying mps_to_circuit(method="approximate")
+    routine fits the brick-wall unitaries via a local/iterative optimization
+    that is randomly initialized internally (and does not expose a seed
+    argument in the public API at the time of writing). Two calls with
+    identical arguments can therefore return circuits with different gate
+    angles, different fidelity to the target MPS, and -- after transpilation
+    -- even different gate counts (since transpile(optimization_level=0)
+    on a different set of angles can synthesize a different RZ/CX layout).
+    This is the *only* source of run-to-run variance in this pipeline once
+    DMRG/ED have converged, which is why repeated trials should re-call only
+    this function (see sweep_n_layers / repeat_approx_circuit_trials below)
+    rather than re-running the whole DMRG+ED pipeline.
     """
     mps_arrays = [psi_mps.get_B(i).to_ndarray() for i in range(n)]
     qc = mps_to_circuit(mps_arrays, method="approximate", shape="lpr", num_layers=n_layers)
     return qc
 
-def mps_to_statevector(psi_mps: MPS, n: int, basis: np.ndarray) -> np.ndarray:
-    """
-    Contract the DMRG MPS into a full statevector (in the fixed-Sz sector).
-    This is the true reference state — not the exact circuit, which has its
-    own compilation error from the isometry decomposition.
-    """
-    full_sv = np.zeros(2**n, dtype=complex)
-    # TeNPy: get the dense statevector directly
-    psi_dense = psi_mps.get_theta(0, n)             # MPS contraction
-    # reshape to 2**n vector (TeNPy returns a LegCharge tensor)
-    full_sv = psi_mps.to_dense()                     # or equivalent for your TeNPy version
-    # project to Sz sector (same convention as build_hamiltonian)
-    psi_sector = full_sv[basis]
-    norm = np.linalg.norm(psi_sector)
-    return psi_sector / norm
+
 # =============================================================================
 # ENERGY CLOSURE CHECK
 # =============================================================================
@@ -494,11 +471,11 @@ def verify_energy(
     # fidelity vs DMRG MPS (true ground state), not vs exact circuit
     fidelity = float(abs(np.vdot(ref_sector, psi_sector))**2) if ref_sector is not None else None
 
-    print(
-        f"\n[verify]  E={energy:.10f}  E_DMRG={dmrg_energy:.10f}  "
-        f"err%={energy_err_pct:.4f}  leakage={leak_norm2:.2e}"
-        + (f"  fidelity_vs_mps={fidelity:.6f}" if fidelity is not None else "")
-    )
+    #print(
+    #    f"\n[verify]  E={energy:.10f}  E_DMRG={dmrg_energy:.10f}  "
+    #    f"err%={energy_err_pct:.4f}  leakage={leak_norm2:.2e}"
+    #    + (f"  fidelity_vs_mps={fidelity:.6f}" if fidelity is not None else "")
+    #)
     return dict(
         circuit_energy    = energy,
         dmrg_energy       = dmrg_energy,
@@ -509,6 +486,156 @@ def verify_energy(
         fidelity          = fidelity,   # |<ψ_mps|ψ_circuit>|² — vs true ground state
     )
 
+
+# =============================================================================
+# SHARED-STATE CONTAINER  (one DMRG/ED solve, reused across many approx fits)
+# =============================================================================
+@dataclass
+class GroundStateContext:
+    """
+    Everything that is expensive and DETERMINISTIC for a given
+    (lattice, j1, j2, chi_max): the Hamiltonian, the ED reference state,
+    the converged DMRG MPS, and the exact isometry circuit + its resources.
+
+    Building this once and reusing it across many approximate-circuit
+    trials is what makes sweep_n_layers() cheap: only the stochastic
+    brick-wall fit (mps_to_approx_circuit) is repeated per trial.
+    """
+    lattice: BaseLattice
+    j1: float
+    j2: float
+    chi_max: int
+    n: int
+    H: csr_matrix
+    basis: np.ndarray
+    e_exact: float
+    psi_exact: np.ndarray
+    E_dmrg: float
+    psi_mps: MPS
+    diag: dict
+    exact_qc: QuantumCircuit
+    exact_resources: ResourceReport
+    exact_verification: dict
+
+
+def build_ground_state_context(
+    lattice: BaseLattice,
+    j1: float = J1,
+    j2: float = J2,
+    chi_max: int = DMRG_CHI_MAX,
+    rz_eps: float = RZ_SYNTHESIS_EPS,
+) -> GroundStateContext:
+    """
+    Run the expensive, deterministic part of the pipeline EXACTLY ONCE:
+    build H, solve ED, run DMRG, compile + verify the exact circuit.
+
+    Call this once per (lattice, j1, j2, chi_max) configuration, then pass
+    the returned context into repeat_approx_circuit_trials() / run_from_context()
+    as many times as you like without re-solving DMRG/ED.
+    """
+    n = lattice.n_sites
+    print(f"\n[context]  lattice={lattice.name}  N={n}  J1={j1}  J2={j2}  "
+          f"chi_max={chi_max}")
+
+    H, basis = build_hamiltonian(lattice, j1, j2)
+    print(f"[H]  sector dim={len(basis)}")
+
+    e_exact, psi_exact, basis, idx_map = exact_ground_state(lattice, j1, j2)
+
+    E_dmrg, psi_mps = run_dmrg(lattice, j1, j2, chi_max)
+    diag = mps_diagnostics(psi_mps)
+
+    exact_qc = mps_to_exact_circuit(psi_mps, n)
+    exact_resources = circuit_resource_report(exact_qc, label="exact", rz_eps=rz_eps)
+    exact_verification = verify_energy(exact_qc, H, basis, E_dmrg, psi_exact)
+
+    return GroundStateContext(
+        lattice=lattice, j1=j1, j2=j2, chi_max=chi_max, n=n,
+        H=H, basis=basis,
+        e_exact=e_exact, psi_exact=psi_exact,
+        E_dmrg=E_dmrg, psi_mps=psi_mps, diag=diag,
+        exact_qc=exact_qc,
+        exact_resources=exact_resources,
+        exact_verification=exact_verification,
+    )
+
+
+from qiskit.exceptions import QiskitError
+
+def _approx_trial(
+    ctx: GroundStateContext,
+    n_layers: int,
+    rz_eps: float,
+    verbose: bool,
+    max_retries: int = 5,
+) -> dict:
+    """
+    One stochastic re-fit of the approximate circuit + its verification.
+
+    mps_to_approx_circuit's brick-wall optimizer is randomly initialized
+    (see its docstring), and occasionally converges to a two-qubit block
+    that Qiskit's TwoQubitWeylDecomposition fails to diagonalize
+    (QiskitError, a known upstream edge case -- qiskit-terra#4159). Since
+    the fit is already stochastic, the simplest fix is to just throw the
+    bad draw away and re-fit: re-running mps_to_approx_circuit gives an
+    independent random initialization, which either won't hit the
+    degenerate case or will draw a different one. We don't touch the
+    circuit's gates/matrices ourselves -- we only decide whether to keep
+    or discard a given stochastic draw.
+    """
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            approx_qc = mps_to_approx_circuit(ctx.psi_mps, ctx.n, n_layers)
+            approx_resources = circuit_resource_report(
+                approx_qc, label="approximate", rz_eps=rz_eps, verbose=verbose
+            )
+            approx_verification = verify_energy(
+                approx_qc, ctx.H, ctx.basis, ctx.E_dmrg, ctx.psi_exact
+            )
+            row = {}
+            row.update({f"approx_{k}": v for k, v in approx_resources.as_row().items()})
+            row.update({f"approx_{k}": v for k, v in approx_verification.items()})
+            row["n_retries"] = attempt
+            return row
+        except QiskitError as e:
+            last_err = e
+            if verbose:
+                print(f"  [warn] transpile/synthesis failure on attempt "
+                      f"{attempt+1}/{max_retries} (n_layers={n_layers}); "
+                      f"re-drawing stochastic fit -- {e}")
+
+    raise RuntimeError(
+        f"_approx_trial: {max_retries} consecutive synthesis failures at "
+        f"n_layers={n_layers}. This many failures in a row suggests "
+        f"something structural (e.g. n_layers too small/large for n, or a "
+        f"version mismatch), not just bad luck in the random init."
+    ) from last_err
+
+
+def repeat_approx_circuit_trials(
+    ctx: GroundStateContext,
+    n_layers: int,
+    n_trials: int = DEFAULT_N_TRIALS,
+    rz_eps: float = RZ_SYNTHESIS_EPS,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Re-fit the approximate circuit to the SAME converged MPS n_trials times
+    and return one row per trial. DMRG/ED are not touched here -- ctx
+    already holds their results.
+    """
+    rows = []
+    for t in range(n_trials):
+        if verbose:
+            print(f"\n[trial {t+1}/{n_trials}]  n_layers={n_layers}")
+        row = _approx_trial(ctx, n_layers, rz_eps, verbose=verbose)
+        row["trial"] = t
+        row["n_layers"] = n_layers
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 # =============================================================================
 # SINGLE-POINT ENTRY POINT
 # =============================================================================
@@ -516,12 +643,17 @@ def run(lattice: BaseLattice,
 j1: float = J1,
 j2: float = J2,
 n_layers: int = 3,
-# fixed: was missing comma
 chi_max: int = DMRG_CHI_MAX,
 rz_eps: float = RZ_SYNTHESIS_EPS,) -> tuple[QuantumCircuit, QuantumCircuit, csr_matrix, np.ndarray, dict, dict]:
     """
     Run DMRG on *lattice*, compile exact MPS circuit AND approximate, verify
     both energies, and return everything needed for poster plots.
+
+    This is a thin convenience wrapper around build_ground_state_context()
+    + a single approximate-circuit trial. For repeated/averaged approximate
+    circuits at fixed n_layers, prefer build_ground_state_context() once
+    followed by repeat_approx_circuit_trials() -- that avoids re-running
+    DMRG/ED on every call.
 
     Returns
     -------
@@ -536,25 +668,11 @@ rz_eps: float = RZ_SYNTHESIS_EPS,) -> tuple[QuantumCircuit, QuantumCircuit, csr_
     print(f"\n[run]  lattice={lattice.name}  N={n}  J1={j1}  J2={j2}  "
           f"chi_max={chi_max}  n_layers={n_layers}")
 
-    H, basis = build_hamiltonian(lattice, j1, j2)
-    print(f"[H]  sector dim={len(basis)}")
+    ctx = build_ground_state_context(lattice, j1, j2, chi_max, rz_eps)
 
-    E_dmrg, psi_mps = run_dmrg(lattice, j1, j2, chi_max)
-    diag = mps_diagnostics(psi_mps)
-
-    exact_qc  = mps_to_exact_circuit(psi_mps, n)
-    approx_qc = mps_to_approx_circuit(psi_mps, n, n_layers)
-    
-    exact_resources  = circuit_resource_report(exact_qc,  label="exact",       rz_eps=rz_eps)
+    approx_qc = mps_to_approx_circuit(ctx.psi_mps, ctx.n, n_layers)
     approx_resources = circuit_resource_report(approx_qc, label="approximate", rz_eps=rz_eps)
-
-
-    # Contract MPS → sector statevector (true reference, not the compiled circuit)
-    mps_ref_sector = mps_to_statevector(psi_mps, n, basis)
-
-    exact_verification  = verify_energy(exact_qc,  H, basis, E_dmrg, ref_sector=mps_ref_sector)
-    approx_verification = verify_energy(approx_qc, H, basis, E_dmrg, ref_sector=mps_ref_sector)
-
+    approx_verification = verify_energy(approx_qc, ctx.H, ctx.basis, ctx.E_dmrg, ctx.psi_exact)
 
     # ── shared base fields ────────────────────────────────────────────────────
     base = dict(
@@ -565,17 +683,15 @@ rz_eps: float = RZ_SYNTHESIS_EPS,) -> tuple[QuantumCircuit, QuantumCircuit, csr_
             j2_over_j1     = (j2 / j1) if j1 else float("nan"),
             chi_max_setting = chi_max,
             n_layers       = n_layers,
-            dmrg_energy    = E_dmrg,
-            **diag,
+            dmrg_energy    = ctx.E_dmrg,
+            **ctx.diag,
             )
 
     # ── per-circuit dicts ─────────────────────────────────────────────────────
-    # If as_row() doesn't accept a prefix, replace with:
-    # **{f"exact_{k}": v for k, v in exact_resources.as_row().items()}
     exact_info = {
         **base,
-        **{f"exact_{k}": v for k, v in exact_resources.as_row().items()},
-        **{f"exact_{k}": v for k, v in exact_verification.items()},
+        **{f"exact_{k}": v for k, v in ctx.exact_resources.as_row().items()},
+        **{f"exact_{k}": v for k, v in ctx.exact_verification.items()},
     }
     approx_info = {
         **base,
@@ -583,12 +699,52 @@ rz_eps: float = RZ_SYNTHESIS_EPS,) -> tuple[QuantumCircuit, QuantumCircuit, csr_
         **{f"approx_{k}": v for k, v in approx_verification.items()},
     }
 
-    return exact_qc, approx_qc, H, basis, exact_info, approx_info
+    return ctx.exact_qc, approx_qc, ctx.H, ctx.basis, exact_info, approx_info
 
 
 # =============================================================================
-# N_LAYERS SWEEP
+# N_LAYERS SWEEP  (research-grade: n_trials independent approx-circuit fits
+# per n_layers value, full summary statistics)
 # =============================================================================
+
+# Metrics that get full (mean/std/min/max/median) summary statistics in
+# sweep_n_layers(). Add/remove keys here to change what gets summarized;
+# they must match the column names produced by _approx_trial()'s row dict.
+SUMMARY_METRICS = [
+    "approx_fidelity",
+    "approx_energy_err_pct",
+    "approx_abs_error",
+    "approx_cx_count",
+    "approx_depth",
+    "approx_non_clifford_count",
+    "approx_non_clifford_depth",
+    "approx_t_count_estimate",
+    "approx_leakage_norm2",
+]
+
+
+def _summarize(df_trials: pd.DataFrame, metrics: list[str]) -> dict:
+    """Mean/std/min/max/median for each metric column, ignoring NaNs/None."""
+    out = {}
+    for m in metrics:
+        if m not in df_trials.columns:
+            continue
+        vals = pd.to_numeric(df_trials[m], errors="coerce").dropna()
+        if len(vals) == 0:
+            out[f"{m}_mean"]   = float("nan")
+            out[f"{m}_std"]    = float("nan")
+            out[f"{m}_min"]    = float("nan")
+            out[f"{m}_max"]    = float("nan")
+            out[f"{m}_median"] = float("nan")
+            continue
+        out[f"{m}_mean"]   = float(vals.mean())
+        out[f"{m}_std"]    = float(vals.std(ddof=1)) if len(vals) > 1 else 0.0
+        out[f"{m}_min"]    = float(vals.min())
+        out[f"{m}_max"]    = float(vals.max())
+        out[f"{m}_median"] = float(vals.median())
+    return out
+
+
 def sweep_n_layers(
             lattice: BaseLattice,
             j1: float = J1,
@@ -596,135 +752,93 @@ def sweep_n_layers(
             chi_max: int = DMRG_CHI_MAX,
             rz_eps: float = RZ_SYNTHESIS_EPS,
             layers: list[int] | None = None,
-            ) -> pd.DataFrame:
+            n_trials: int = DEFAULT_N_TRIALS,
+            verbose_trials: bool = False,
+            return_all_trials: bool = False,
+            ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Sweep over n_layers values and collect approx-circuit metrics.
+    Sweep over n_layers values. DMRG/ED are solved ONCE for this
+    (lattice, j1, j2, chi_max) configuration via build_ground_state_context();
+    for each n_layers value, the approximate circuit is independently re-fit
+    n_trials times (this is the only stochastic step) and summarized with
+    mean/std/min/max/median.
 
-    DMRG runs once (inside run() with n_layers=layers[0]); the MPS is reused
-    implicitly because each run() call shares the same lattice/j1/j2/chi_max.
-    For large systems consider refactoring to run DMRG once and pass psi_mps in.
+    Parameters
+    ----------
+    layers             : list of n_layers values to sweep (default 1..10-ish)
+    n_trials           : number of independent approx-circuit re-fits per
+                          n_layers value (default DEFAULT_N_TRIALS = 20)
+    verbose_trials      : if True, print full resource/verify output for
+                          every single trial (very chatty for n_trials=20+)
+    return_all_trials   : if True, also return the raw per-trial DataFrame
+                          (one row per (n_layers, trial)) for custom analysis
+                          or violin/box plots, in addition to the summary.
 
     Returns
     -------
-    pd.DataFrame  with columns:
-        n_layers, fidelity, energy_error_pct, approx_cx_count, approx_depth, …
+    df_summary  : pd.DataFrame, one row per n_layers value, with
+                  <metric>_mean / _std / _min / _max / _median columns
+                  for every metric in SUMMARY_METRICS, plus n_trials and
+                  the exact-circuit reference values (constant across rows
+                  since DMRG/ED/exact-circuit were solved once).
+    df_all      : (only if return_all_trials=True) pd.DataFrame with one
+                  row per individual trial, columns = n_layers, trial, and
+                  all raw approx_* metrics. Useful for box/violin plots
+                  showing the full distribution, not just summary stats.
     """
     if layers is None:
-        layers = [1, 2, 3, 4, 5, 6, 8, 10]
+        layers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
-    rows = []
+    print(f"\n[sweep_n_layers]  layers={layers}  n_trials={n_trials}  "
+          f"(DMRG/ED solved once, approx-circuit re-fit {n_trials}x per layer)")
+
+    ctx = build_ground_state_context(lattice, j1, j2, chi_max, rz_eps)
+
+    summary_rows = []
+    all_trial_dfs = []
     for n_lay in layers:
-        print(f"\n[sweep_n_layers]  n_layers={n_lay}")
-        _, _, H, basis, exact_info, approx_info = run(
-            lattice,
-            j1=j1,
-            j2=j2,
+        print(f"\n[sweep_n_layers]  n_layers={n_lay}  "
+              f"running {n_trials} independent approx-circuit fits...")
+        df_trials = repeat_approx_circuit_trials(
+            ctx, n_lay, n_trials=n_trials, rz_eps=rz_eps, verbose=verbose_trials
+        )
+        all_trial_dfs.append(df_trials)
+
+        summary = dict(
             n_layers=n_lay,
-            chi_max=chi_max,
-            rz_eps=rz_eps,
-            )
-        rows.append({
-            "n_layers":         n_lay,
-            # energy metrics
-            "exact_fidelity":   exact_info.get("exact_fidelity"),
-            "approx_fidelity":  approx_info.get("approx_fidelity"),
-            "exact_energy_err": exact_info.get("exact_energy_error_pct"),
-            "approx_energy_err":approx_info.get("approx_energy_error_pct"),
-            # circuit cost
-            "approx_cx":        approx_info.get("approx_cx_count"),
-            "approx_depth":     approx_info.get("approx_depth"),
-            "exact_cx":         exact_info.get("exact_cx_count"),
-            "exact_depth":      exact_info.get("exact_depth"),
-            })
+            n_trials=n_trials,
+            lattice=lattice.name,
+            n_sites=ctx.n,
+            j1=j1, j2=j2,
+            j2_over_j1=(j2 / j1) if j1 else float("nan"),
+            chi_max_setting=chi_max,
+            dmrg_energy=ctx.E_dmrg,
+            **ctx.diag,
+            exact_fidelity=ctx.exact_verification.get("fidelity"),
+            exact_energy_err_pct=ctx.exact_verification.get("energy_err_pct"),
+            exact_cx_count=ctx.exact_resources.cx_count,
+            exact_depth=ctx.exact_resources.depth,
+        )
+        summary.update(_summarize(df_trials, SUMMARY_METRICS))
+        summary_rows.append(summary)
 
-    df = pd.DataFrame(rows)
-    print("\n[sweep_n_layers]  done")
-    print(df.to_string(index=False))
-    return df
+        # quick console readout per layer count
+        fmean = summary.get("approx_fidelity_mean", float("nan"))
+        fstd  = summary.get("approx_fidelity_std", float("nan"))
+        emean = summary.get("approx_energy_err_pct_mean", float("nan"))
+        estd  = summary.get("approx_energy_err_pct_std", float("nan"))
+        print(f"  -> fidelity = {fmean:.6f} ± {fstd:.6f}   "
+              f"energy_err% = {emean:.4f} ± {estd:.4f}   "
+              f"(n_trials={n_trials})")
 
+    df_summary = pd.DataFrame(summary_rows)
+    print("\n[sweep_n_layers]  summary (mean over n_trials independent fits)")
+    print(df_summary.to_string(index=False))
 
-# =============================================================================
-# SWEEPS FOR THE POSTER
-# =============================================================================
-def sweep_j2_ratio(
-            make_lattice_fn,
-            L: int,
-            ratios: list[float],
-            j1: float = J1,
-            chi_max: int = DMRG_CHI_MAX,
-            rz_eps: float = RZ_SYNTHESIS_EPS,
-            ) -> list[dict]:
-    """
-    Fixed system size L, sweep J2/J1 across the gapless -> dimerized
-    transition (critical point near J2/J1 ~ 0.241; exactly solvable
-    dimer point at J2/J1 = 0.5, the Majumdar-Ghosh point -- useful as a
-    sanity check since the exact ground state is known there).
-
-    Returns a list of per-point `info` dicts (see run()), ready to dump
-    to CSV / a dataframe for plotting resource cost & entanglement vs.
-    J2/J1.
-    """
-    rows = []
-    for ratio in ratios:
-        lattice = make_lattice_fn(L)
-        j2 = ratio * j1
-        try:
-            exact_qc, approx_qc, H, basis, exact_info, approx_info = run(chain(8), j1=J1, j2=0.0, chi_max=DMRG_CHI_MAX)
-            rows.append(exact_info)
-            rows.append(approx_info)
-        except Exception as exc:  # keep the sweep alive if one point fails
-            print(f"[sweep_j2_ratio] FAILED at J2/J1={ratio}: {exc}")
-            rows.append(dict(lattice=lattice.name, n_sites=L, j1=j1, j2=j2,
-                              j2_over_j1=ratio, error=str(exc)))
-    return rows
-
-
-def sweep_system_size(
-            make_lattice_fn,
-            sizes: list[int],
-            j1: float = J1,
-            j2: float = J2,
-            chi_max: int = DMRG_CHI_MAX,
-            rz_eps: float = RZ_SYNTHESIS_EPS,
-            ) -> list[dict]:
-    """
-    Fixed J2/J1, sweep system size at a fixed chi_max truncation. This is
-    the scaling plot: resource cost (qubits, CX, RZ/T-count) and DMRG
-    energy-per-site vs. N, at a bond dimension cap that does NOT grow with
-    N -- showing where a fixed-chi_max budget starts to bite.
-    """
-    rows = []
-    for n in sizes:
-        lattice = make_lattice_fn(n)
-        try:
-            exact_qc, approx_qc, H, basis, exact_info, approx_info = run(chain(8), j1=J1, j2=0.0, chi_max=DMRG_CHI_MAX)
-            info["energy_per_site"] = info["dmrg_energy"] / n
-            rows.append(exact_info)
-            rows.append(approx_info)
-        except Exception as exc:
-            print(f"[sweep_system_size] FAILED at N={n}: {exc}")
-            rows.append(dict(lattice=lattice.name, n_sites=n, j1=j1, j2=j2,
-                              chi_max_setting=chi_max, error=str(exc)))
-    return rows
-
-
-def save_results_csv(rows: list[dict], path: str) -> None:
-    """Flatten a list of per-point info dicts (possibly with different keys,
-    e.g. failed points) to a single CSV for plotting outside this script."""
-    if not rows:
-        print(f"[save_results_csv] nothing to write for {path}")
-        return
-    fieldnames: list[str] = []
-    for row in rows:
-        for k in row.keys():
-            if k not in fieldnames:
-                fieldnames.append(k)
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-    print(f"[save_results_csv] wrote {len(rows)} rows -> {path}")
+    if return_all_trials:
+        df_all = pd.concat(all_trial_dfs, ignore_index=True)
+        return df_summary, df_all
+    return df_summary
 
 
 if __name__ == '__main__':
@@ -733,10 +847,41 @@ if __name__ == '__main__':
     def chain(L):
         return make_lattice('chain', L=L)
     lattice = chain(8)
-    # --- single point, sanity check -----------------------------------------
-    exact_qc, approx_qc, H, basis, exact_info, approx_info = run(chain(8), j1=J1, j2=0.0, chi_max=DMRG_CHI_MAX)
 
-    # --- poster plot 1: resource cost & entanglement vs J2/J1 ---------------
-    df = sweep_n_layers(lattice, layers=[1, 2, 3, 4, 6, 8])
-    df.plot("n_layers", ["approx_fidelity", "approx_energy_err"])
-    df.plot("approx_cx", "approx_fidelity", marker="o")   # cost vs quality
+    # --- single point, sanity check -----------------------------------------
+    exact_qc, approx_qc, H, basis, exact_info, approx_info = run(
+        chain(8), j1=J1, j2=0.0, chi_max=DMRG_CHI_MAX
+    )
+
+    # --- research-grade sweep: 20 independent approx-circuit fits per
+    #     n_layers value, DMRG/ED solved once ---------------------------------
+    df_summary, df_all = sweep_n_layers(
+        lattice,
+        layers=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        n_trials=DEFAULT_N_TRIALS,
+        return_all_trials=True,
+    )
+
+    # save both the summary (for the poster table/plot) and the raw
+    # per-trial data (for error bars / box-and-whisker if you want them)
+    df_summary.to_csv("sweep_n_layers_summary.csv", index=False)
+    df_all.to_csv("sweep_n_layers_all_trials.csv", index=False)
+
+    # error-bar plot: mean fidelity vs n_layers with std as error bars
+    ax = df_summary.plot(
+        x="n_layers", y="approx_fidelity_mean",
+        yerr="approx_fidelity_std", marker="o", capsize=4,
+        title="Approx-circuit fidelity vs n_layers (mean ± std, n=%d trials)" % DEFAULT_N_TRIALS,
+    )
+
+    df_summary.plot(
+        x="n_layers", y="approx_energy_err_pct_mean",
+        yerr="approx_energy_err_pct_std", marker=".",
+        title="Energy error %% vs n_layers (mean ± std)",
+    )
+
+    # cost vs quality, mean over trials
+    df_summary.plot(
+        x="approx_fidelity_mean", y="approx_cx_count_mean", marker="o",
+        title="Resource cost vs quality (means over %d trials)" % DEFAULT_N_TRIALS,
+    )
