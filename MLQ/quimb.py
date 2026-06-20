@@ -8,52 +8,6 @@ Dependencies
     pip install quimb qiskit scipy numpy pandas qiskit-quimb
     pip install git+https://github.com/qiskit-community/mps-to-circuit.git
 
-Notes on this version (quimb instead of TeNPy)
-------------------------------------------------
-- TeNPy's CouplingMPOModel/DMRGEngine is replaced by a hand-built quimb MPO
-  (sum of two-site Heisenberg terms via MPO_product_operator) + quimb.DMRG2.
-  This is the "explicit edge list -> MPO" approach: each S_i.S_j term is
-  added as its own bond-dim-1 MPO and the whole Hamiltonian is the sum of
-  these, then compressed. This works for ANY pair (i, j), not just nearest
-  neighbours, which is what lets J2 (next-nearest-neighbour) sit on top of
-  J1 without needing a genuinely 2D lattice -- quimb's convenience builder
-  MPO_ham_heis()/SpinHam1D are both structurally nearest-neighbour-only
-  (bond dimension 5, fixed W-tensor), so they can't carry a J2 term; this
-  explicit per-edge construction is the one that generalizes correctly.
-- The lattices.py / BaseLattice abstraction is removed. This version is a
-  1D chain only (open boundary conditions). nn_edges/nnn_edges are built
-  directly as range() pairs instead of coming from a lattice object.
-- TeNPy's conserve='Sz' restricted DMRG to a fixed-Sz sector by construction.
-  quimb's MPO-based DMRG has no symmetry sectors: it optimizes over the
-  full Hilbert space. Sz is still exactly conserved by the Heisenberg
-  Hamiltonian itself, so starting from a Neel state (which has fixed Sz)
-  and running unconstrained DMRG converges within that sector anyway --
-  verified numerically against ED below (agreement to ~1e-10 or better).
-- BIT CONVENTION CHANGE: quimb's qu.up() == [1,0] is the computational |0>
-  state, and qu.down() == [0,1] is |1>. The bit convention in build_basis/
-  build_hamiltonian below has been flipped relative to the original TeNPy
-  version to match this: bit=0 <-> up (Sz=+1/2), bit=1 <-> down (Sz=-1/2).
-  This is what makes sv[basis] in verify_energy() line up with quimb/Qiskit
-  qubit ordering with zero remapping, exactly as before but for the new
-  convention. Site i <-> qubit i still holds throughout.
-
-CircuitMPS fidelity
--------------------
-- circuit_to_mps() converts any compiled Qiskit circuit to a quimb
-  CircuitMPS by routing it through qiskit_quimb.quimb_circuit().  This
-  stays in tensor-network space: no 2^N statevector is materialised.
-- mps_fidelity() then contracts <psi_dmrg|psi_circuit>^2 purely as an MPS
-  overlap, which is O(N * chi^3) and stays tractable for the bond dims
-  produced by mps_to_circuit.
-- verify_energy_mps() is the tensor-network analogue of verify_energy():
-  it uses the CircuitMPS's .psi MPS (not a statevector) and returns the
-  same dict schema so the rest of the pipeline is unaffected.  The
-  statevector-based verify_energy() is still available for small N or for
-  cross-checking.
-- The DMRG MPS (ctx.psi_mps) and the CircuitMPS output share the same
-  site-index naming convention (k0..kN-1) with no remapping needed: this
-  was verified by confirming that a CircuitMPS initialised to the Neel
-  state via X gates on odd sites has unit overlap with qtn.MPS_neel_state().
 """
 
 from __future__ import annotations
@@ -91,6 +45,8 @@ try:
     print(f"[Qiskit]  {qiskit.__version__}")
 except ImportError:
     raise ImportError("pip install qiskit")
+
+from typing import Optional
 
 # =============================================================================
 # CONFIG
@@ -1131,7 +1087,7 @@ def sweep_n_layers(
 
 if __name__ == '__main__':
 
-    chain = make_chain(20)
+    chain = make_chain(8)
 
     # --- single point, sanity check -----------------------------------------
     exact_qc, approx_qc, H, basis, exact_info, approx_info = run(
