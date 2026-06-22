@@ -1,5 +1,4 @@
-analyze_40938.err  analyze_40938.out  analyze_40939.err  analyze_40939.out  analyze_sweeps.py  dmrg_circuit_pipeline.py  MLQ-env  __pycache__  requirements.txt  submit.sh  thread.sh
-[f8s@login1.odo MLQ]$ cat dmrg_circuit_pipeline.py 
+
 """
 Heisenberg MPS Pipeline + Timing Harness
 =========================================
