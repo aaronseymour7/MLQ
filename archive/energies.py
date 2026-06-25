@@ -11,6 +11,7 @@ import math
 def run_vmc_case(
     n,
     h_builder,
+    reference_energy=None,
     state="ground",
     model_alpha=6,
     n_samples=4096,
@@ -53,39 +54,7 @@ def run_vmc_case(
 
     ha, hi, graph = h_builder(n, **h_builder_kwargs)
 
-    # --------------------------------------------------------
-    # Exact diagonalization target
-    # --------------------------------------------------------
 
-    if state == "ground":
-        ed_result = nk.exact.lanczos_ed(ha, k=1)
-        e_exact = float(ed_result[0])
-
-    elif state == "highest":
-        # maximize H by minimizing -H
-        ed_result = nk.exact.lanczos_ed(-ha, k=1)
-        e_exact = -float(ed_result[0])
-
-    elif state == "first_excited":
-
-        ed_result = nk.exact.lanczos_ed(ha, k=4)
-
-        evals = np.array(ed_result)
-
-        e0 = float(evals[0])
-
-        tol = 1e-10
-
-        i = 1
-        while i < len(evals) and abs(float(evals[i]) - e0) < tol:
-            i += 1
-
-        if i == len(evals):
-            raise ValueError("Need more Lanczos eigenvalues to resolve excitation.")
-
-        e_exact = float(evals[i])
-    else:
-        raise ValueError(f"Unknown state: {state}")
 
     # --------------------------------------------------------
     # Model / sampler
@@ -157,11 +126,10 @@ def run_vmc_case(
 
     e_error = float(energy_stats.error_of_mean)
 
+
     return {
         "N": n,
         "VMC": e_vmc,
-        "Lanczos": e_exact,
-        "diff": abs(e_vmc - e_exact),
         "VMC_err": e_error,
     }
 
@@ -208,9 +176,8 @@ def printer(data):
 
         print(
             f"N={d['N']} | "
-            f"VMC: {d['VMC']:.8f} | "
-            f"Lanczos: {d['Lanczos']:.8f} | "
-            f"Abs Difference: {d['diff']:.8f}"
+            f"VMC Energy: {d['VMC']:.8f} | "
+            f"MC Error: {d['VMC_err']:.2e}"
         )
 
 
@@ -218,7 +185,7 @@ def printer(data):
 # Hamiltonian builder
 # ============================================================
 
-def build_j1j2(n, j1, j2, pbc=True):
+def build_j1j2(n, j1, j2, pbc=False, total_sz=0):
 
     Sp = np.array([[0, 1], [0, 0]], dtype=complex)
     Sm = np.array([[0, 0], [1, 0]], dtype=complex)
@@ -230,8 +197,6 @@ def build_j1j2(n, j1, j2, pbc=True):
         + 0.5 * np.kron(Sm, Sp)
     )
 
-    n_up = n // 2
-    total_sz = (n_up - (n - n_up)) / 2.0
 
     hi = nk.hilbert.Spin(
         s=0.5,
@@ -272,7 +237,7 @@ def build_j1j2(n, j1, j2, pbc=True):
     return ha, hi, graph
 
 
-def main(n_sizes, J1, J2, K=3):
+def main(n_sizes, J1, J2, K=5):
     """
     Runs K VMC trials per (N, J2) combination and records the lowest energy per level.
     
@@ -292,18 +257,25 @@ def main(n_sizes, J1, J2, K=3):
 
             for state in states:
                 best_result = None
-
+                if state == "ground":
+                    sz = 0
+                elif state == "first_excited":
+                    sz = 1
+                elif state == "highest":
+                    sz = 0
                 for k in range(K):
                     print(f"\n  [{state}] Trial {k+1}/{K}")
                     result = run_vmc_case(
                         n=n,
                         h_builder=build_j1j2,
                         state=state,
+                        reference_energy=None,
                         h_builder_kwargs={
                             "j1": J1,
                             "j2": j2,
-                            "pbc": True,
-                        },
+                            "pbc": False,
+                            "total_sz": sz,
+                        }
                     )
                     result["trial"] = k + 1
 
@@ -338,8 +310,9 @@ def main(n_sizes, J1, J2, K=3):
 
 
 if __name__ == "__main__":
-    n_sizes = [8]
+        
+    n_sizes = list(range(10, 101, 10))
     J1 = 1.0
-    J2 = [0.7]
+    J2 = [0.0]
     K = 1
     main(n_sizes, J1, J2, K=K)
