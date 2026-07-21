@@ -1,0 +1,37 @@
+JAX devices: [CudaDevice(id=0)]
+Loaded trained weights from fnqs_variables.pkl
+j2=-0.1500 [EXTRAP]  exact=-1.894235  nqs=-1.884231+-0.001111  abs_err=1.00e-02  rel_err=5.28e-03  rel_var=1.42e-03
+j2=-0.0010 [EXTRAP]  exact=-1.781614  nqs=-1.781759+-0.000265  abs_err=1.45e-04  rel_err=8.15e-05  rel_var=9.09e-05
+j2=+0.0000 [interp]  exact=-1.780877  nqs=-1.780817+-0.000112  abs_err=6.05e-05  rel_err=3.40e-05  rel_var=1.62e-05
+j2=+0.0750 [interp]  exact=-1.726526  nqs=-1.726457+-0.000090  abs_err=6.91e-05  rel_err=4.00e-05  rel_var=1.10e-05
+j2=+0.1500 [interp]  exact=-1.674153  nqs=-1.674189+-0.000081  abs_err=3.56e-05  rel_err=2.13e-05  rel_var=9.55e-06
+j2=+0.2250 [interp]  exact=-1.624282  nqs=-1.624403+-0.000085  abs_err=1.21e-04  rel_err=7.45e-05  rel_var=1.12e-05
+j2=+0.2411 [interp]  exact=-1.613978  nqs=-1.613831+-0.000111  abs_err=1.47e-04  rel_err=9.11e-05  rel_var=1.95e-05
+j2=+0.3000 [interp]  exact=-1.577826  nqs=-1.577823+-0.000104  abs_err=2.98e-06  rel_err=1.89e-06  rel_var=1.79e-05
+j2=+0.3750 [interp]  exact=-1.536785  nqs=-1.536568+-0.000099  abs_err=2.17e-04  rel_err=1.41e-04  rel_var=1.70e-05
+j2=+0.4500 [interp]  exact=-1.506988  nqs=-1.506367+-0.000123  abs_err=6.21e-04  rel_err=4.12e-04  rel_var=2.74e-05
+j2=+0.5250 [interp]  exact=-1.501480  nqs=-1.501071+-0.000131  abs_err=4.10e-04  rel_err=2.73e-04  rel_var=3.13e-05
+j2=+0.6000 [interp]  exact=-1.523526  nqs=-1.518880+-0.000325  abs_err=4.65e-03  rel_err=3.05e-03  rel_var=1.88e-04
+j2=+0.6010 [EXTRAP]  exact=-1.524002  nqs=-1.519248+-0.000364  abs_err=4.75e-03  rel_err=3.12e-03  rel_var=2.35e-04
+j2=+0.7500 [EXTRAP]  exact=-1.636850  nqs=-0.715348+-0.016761  abs_err=9.22e-01  rel_err=5.63e-01  rel_var=2.25e+00
+
+Saved results to fnqs_vs_exact_results.csv
+     j2  in_support   e_exact     e_nqs  e_nqs_err  abs_err  rel_err  nqs_rel_variance
+-0.1500       False -1.894235 -1.884231   0.001111 0.010004 0.005281          0.001423
+-0.0010       False -1.781614 -1.781759   0.000265 0.000145 0.000081          0.000091
+ 0.0000        True -1.780877 -1.780817   0.000112 0.000061 0.000034          0.000016
+ 0.0750        True -1.726526 -1.726457   0.000090 0.000069 0.000040          0.000011
+ 0.1500        True -1.674153 -1.674189   0.000081 0.000036 0.000021          0.000010
+ 0.2250        True -1.624282 -1.624403   0.000085 0.000121 0.000075          0.000011
+ 0.2411        True -1.613978 -1.613831   0.000111 0.000147 0.000091          0.000020
+ 0.3000        True -1.577826 -1.577823   0.000104 0.000003 0.000002          0.000018
+ 0.3750        True -1.536785 -1.536568   0.000099 0.000217 0.000141          0.000017
+ 0.4500        True -1.506988 -1.506367   0.000123 0.000621 0.000412          0.000027
+ 0.5250        True -1.501480 -1.501071   0.000131 0.000410 0.000273          0.000031
+ 0.6000        True -1.523526 -1.518880   0.000325 0.004646 0.003049          0.000188
+ 0.6010       False -1.524002 -1.519248   0.000364 0.004754 0.003119          0.000235
+ 0.7500       False -1.636850 -0.715348   0.016761 0.921503 0.562973          2.248800
+
+Mean relative error (in-support):     4.138e-04
+Mean relative error (extrapolation):  1.429e-01
+matplotlib not installed -- skipping plot, CSV results still saved.
