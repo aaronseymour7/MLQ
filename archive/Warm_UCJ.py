@@ -1,0 +1,1749 @@
+from __future__ import annotations
+
+import os
+import time
+import time as _time
+import warnings
+from dataclasses import dataclass, field
+from typing import Any
+
+# Suppress NetKet's holomorphic warning — our RBM is complex-valued by
+# construction but not holomorphic; False is the correct setting and the
+# warning adds no actionable information.
+warnings.filterwarnings(
+    "ignore",
+    message=".*holomorphic.*",
+    category=UserWarning,
+)
+
+import numpy as np
+from scipy.sparse import lil_matrix, csr_matrix
+from scipy.sparse.linalg import eigsh
+from scipy.optimize import minimize as scipy_minimize
+
+import jax
+import jax.numpy as jnp
+import optax
+import netket as nk
+import netket.nn as nknn
+import flax.linen as nn
+
+try:
+    import pennylane as qml
+    print(f"[PennyLane]  version {qml.version()}")
+except ImportError:
+    raise ImportError("pip install pennylane pennylane-lightning[gpu]")
+
+from lattices import BaseLattice, make_lattice  # <-- NEW
+
+# ---------------------------------------------------------------------------
+# JAX setup
+# ---------------------------------------------------------------------------
+jax.config.update("jax_enable_x64", True)
+_GPU_DEVICES = jax.devices("gpu")
+_CPU_DEVICE  = jax.devices("cpu")[0]
+_JAX_DEVICE  = _GPU_DEVICES[0] if _GPU_DEVICES else _CPU_DEVICE
+print(f"[JAX]  using device: {_JAX_DEVICE}")
+
+def _to_device(x):
+    return jax.device_put(x, _JAX_DEVICE)
+
+# ---------------------------------------------------------------------------
+# PennyLane device
+# ---------------------------------------------------------------------------
+_BACKEND_PREF = os.environ.get("PENNYLANE_BACKEND", "lightning.qubit")
+
+def _make_device(n_wires: int):
+    bond_dim = int(os.environ.get("MPS_BOND_DIM", "64"))
+    for backend in [_BACKEND_PREF, "lightning.qubit", "default.qubit"]:
+        try:
+            if backend == "lightning.tensor":
+                dev = qml.device(backend, wires=n_wires,
+                                 method="mps", max_bond_dim=bond_dim)
+            else:
+                dev = qml.device(backend, wires=n_wires)
+            print(f"[PennyLane device]  N={n_wires}  backend={backend}")
+            return dev, backend
+        except Exception as exc:
+            print(f"[PennyLane]  {backend} unavailable ({exc}), trying next…")
+    raise RuntimeError("No PennyLane backend could be initialised.")
+
+
+# =============================================================================
+# CONFIG
+# =============================================================================
+J1          = 1.0   # nearest-neighbour coupling
+J2          = 0.0   # next-nearest-neighbour coupling (0.0 = pure Heisenberg; 0.5 = MG point; 1.0 = maximally frustrated)
+PBC         = True
+ALPHA       = 3
+VMC_SAMPLES = 2048
+VMC_STEPS   = 800
+K_MAX       = 1
+E_TOL       = 5e-5
+SEED        = 23
+N_RESTARTS  = 8
+
+LBFGS_MAXITER = 800
+LBFGS_MAXFUN  = 50_000
+
+# Number of cold-baseline restarts run after warm restarts for each layer.
+# Set to 0 to disable cold baseline (no comparison printed in report).
+N_COLD_RESTARTS = 8
+
+VARIANTS = ['re', 'im', 'g']
+
+# Jastrow GPU chunking
+JASTROW_CHUNKED = False
+JASTROW_CHUNK   = 32
+
+
+# =============================================================================
+# TIMER
+# =============================================================================
+class Timer:
+    def __init__(self):
+        self._laps   = {}
+        self._starts = {}
+
+    def start(self, name):
+        self._starts[name] = _time.perf_counter()
+
+    def stop(self, name):
+        if name not in self._starts:
+            raise KeyError(f"Timer '{name}' was never started.")
+        self._laps[name] = _time.perf_counter() - self._starts.pop(name)
+        return self._laps[name]
+
+    def summary(self, title="Runtime summary"):
+        W = 54
+        print(f"\n{'='*W}\n  {title}\n{'='*W}")
+        total = 0.0
+        for name, t in self._laps.items():
+            total += t
+            m, s = divmod(t, 60)
+            print(f"  {name:<36}  {int(m):2d}m {s:05.2f}s")
+        m, s = divmod(total, 60)
+        print(f"  {'─'*48}")
+        print(f"  {'TOTAL':<36}  {int(m):2d}m {s:05.2f}s")
+        print(f"{'='*W}\n")
+        return self._laps.copy()
+
+
+# =============================================================================
+# DIAGNOSTIC DATA STRUCTURES
+# =============================================================================
+
+@dataclass
+class RestartRecord:
+    """Stores the outcome of a single L-BFGS restart."""
+    restart_idx:      int
+    kind:             str        # "warm" | "cold" | "layer_append"
+    x0_norm:          float
+    x0_jastrow_norm:  float      # norm of the Jastrow block in x0
+    x0_givens_norm:   float      # norm of the Givens block(s) in x0
+    E_final:          float
+    fidelity:         float
+    nit:              int
+    nfev:             int
+    wall_sec:         float
+    converged:        bool       # |E - E_exact| < e_tol
+
+
+@dataclass
+class LayerRecord:
+    """Collects all restarts for a single k-layer."""
+    k:        int
+    variant:  str
+    restarts: list[RestartRecord] = field(default_factory=list)
+
+    @property
+    def best(self) -> RestartRecord | None:
+        return min(self.restarts, key=lambda r: r.E_final) if self.restarts else None
+
+    @property
+    def warm_restarts(self):
+        return [r for r in self.restarts if r.kind == "warm"]
+
+    @property
+    def cold_restarts(self):
+        return [r for r in self.restarts if r.kind != "warm"]
+
+
+@dataclass
+class DiagnosticTracker:
+    """
+    Central diagnostic object.  One instance per variant per run().
+    Attach to an optimisation run and call .report() at the end.
+
+    Parameters
+    ----------
+    e_exact  : float  – ground-state energy from Lanczos / exact diag.
+    n        : int    – system size.
+    variant  : str    – 're', 'im', or 'g'.
+    e_tol    : float  – convergence threshold (same as adaptive_ucj).
+    """
+    e_exact:  float
+    n:        int
+    variant:  str
+    e_tol:    float = 5e-3
+
+    layers:   list[LayerRecord] = field(default_factory=list)
+
+    # Warm-start signal statistics (filled by analyse_init)
+    jastrow_signal: dict = field(default_factory=dict)
+    rdm_signal:     dict = field(default_factory=dict)
+
+    def _get_layer(self, k: int) -> LayerRecord:
+        for lr in self.layers:
+            if lr.k == k:
+                return lr
+        lr = LayerRecord(k=k, variant=self.variant)
+        self.layers.append(lr)
+        return lr
+
+    def log_restart(self, k: int, record: RestartRecord):
+        self._get_layer(k).restarts.append(record)
+
+    def analyse_init(self, C_jastrow: np.ndarray,
+                     rho_real: np.ndarray | None,
+                     rho_imag: np.ndarray | None,
+                     noise_scale: float = 0.01):
+        """
+        Characterise the warm-start signal before optimisation.
+        Call this right after extract_ucj_correlators().
+        """
+        n = self.n
+        pairs  = [(i, j) for i in range(n) for j in range(i + 1, n)]
+        J_flat = np.array([C_jastrow[i, j] for i, j in pairs])
+
+        self.jastrow_signal = {
+            "max_abs":    float(np.max(np.abs(J_flat))),
+            "mean_abs":   float(np.mean(np.abs(J_flat))),
+            "std":        float(np.std(J_flat)),
+            "noise_scale": noise_scale,
+            "snr":        float(np.max(np.abs(J_flat)) / (noise_scale + 1e-12)),
+        }
+
+        rdm_info: dict[str, Any] = {}
+        if rho_real is not None:
+            Re_flat = np.array([rho_real[i, j] for i, j in pairs])
+            rdm_info["re_max_abs"]  = float(np.max(np.abs(Re_flat)))
+            rdm_info["re_mean_abs"] = float(np.mean(np.abs(Re_flat)))
+            rdm_info["re_snr"]      = float(np.max(np.abs(Re_flat)) / (noise_scale + 1e-12))
+        if rho_imag is not None:
+            Im_flat = np.array([rho_imag[i, j] for i, j in pairs])
+            rdm_info["im_max_abs"]  = float(np.max(np.abs(Im_flat)))
+            rdm_info["im_mean_abs"] = float(np.mean(np.abs(Im_flat)))
+            rdm_info["im_snr"]      = float(np.max(np.abs(Im_flat)) / (noise_scale + 1e-12))
+        self.rdm_signal = rdm_info
+
+    # ------------------------------------------------------------------
+    # REPORT
+    # ------------------------------------------------------------------
+    def report(self):
+        W    = 72
+        sep  = "=" * W
+        thin = "-" * W
+
+        print(f"\n{sep}")
+        print(f"  WARM-START DIAGNOSTIC  |  {self.variant}-uCJ  N={self.n}")
+        print(f"  E_exact = {self.e_exact:.8f}    e_tol = {self.e_tol:.2e}")
+        print(sep)
+
+        # ── Init signal ──────────────────────────────────────────────
+        if self.jastrow_signal:
+            print("\n  [1]  INIT SIGNAL QUALITY")
+            print(thin)
+            js = self.jastrow_signal
+            snr_verdict = ("STRONG" if js["snr"] > 5
+                           else "MODERATE" if js["snr"] > 2
+                           else "WEAK — warm start ≈ noise")
+            print(f"  Jastrow (C_ij)  max|J|={js['max_abs']:.5f}  "
+                  f"mean|J|={js['mean_abs']:.5f}  "
+                  f"noise={js['noise_scale']:.4f}  "
+                  f"SNR={js['snr']:.1f}  → {snr_verdict}")
+
+            if self.rdm_signal:
+                rd = self.rdm_signal
+                if "re_snr" in rd:
+                    snr_re = ("STRONG" if rd["re_snr"] > 5
+                              else "MODERATE" if rd["re_snr"] > 2
+                              else "WEAK")
+                    print(f"  Re(ρ_ij)        max|Re|={rd['re_max_abs']:.5f}  "
+                          f"SNR={rd['re_snr']:.1f}  → {snr_re}")
+                if "im_snr" in rd:
+                    snr_im = ("STRONG" if rd["im_snr"] > 5
+                              else "MODERATE" if rd["im_snr"] > 2
+                              else "WEAK — imaginary Givens may not benefit")
+                    print(f"  Im(ρ_ij)        max|Im|={rd['im_max_abs']:.5f}  "
+                          f"SNR={rd['im_snr']:.1f}  → {snr_im}")
+
+        # ── Per-layer breakdown ───────────────────────────────────────
+        print(f"\n  [2]  PER-LAYER RESULTS")
+        print(thin)
+        hdr = (f"  {'k':<4} {'restart':<10} {'kind':<14} "
+               f"{'E_final':>12} {'|ΔE|':>10} {'fidelity':>10} "
+               f"{'nit':>6} {'sec':>7}")
+        print(hdr)
+        print("  " + "-" * (W - 2))
+
+        for lr in sorted(self.layers, key=lambda l: l.k):
+            for r in lr.restarts:
+                dE   = abs(r.E_final - self.e_exact)
+                conv = " ✓" if r.converged else ""
+                print(f"  {lr.k:<4} {r.restart_idx:<10} {r.kind:<14} "
+                      f"{r.E_final:>12.8f} {dE:>10.6f} {r.fidelity:>10.6f} "
+                      f"{r.nit:>6} {r.wall_sec:>7.1f}{conv}")
+
+        # ── Warm vs cold comparison ───────────────────────────────────
+        print(f"\n  [3]  WARM vs COLD COMPARISON  (per layer)")
+        print(thin)
+        has_comparison = False
+        for lr in sorted(self.layers, key=lambda l: l.k):
+            warm = lr.warm_restarts
+            cold = lr.cold_restarts
+            if not warm or not cold:
+                continue
+            has_comparison = True
+            best_warm_E   = min(r.E_final for r in warm)
+            best_cold_E   = min(r.E_final for r in cold)
+            mean_warm_nit = np.mean([r.nit for r in warm])
+            mean_cold_nit = np.mean([r.nit for r in cold])
+            mean_warm_fid = np.mean([r.fidelity for r in warm])
+            mean_cold_fid = np.mean([r.fidelity for r in cold])
+
+            dE_warm    = abs(best_warm_E - self.e_exact)
+            dE_cold    = abs(best_cold_E - self.e_exact)
+            better_E   = "warm ✓" if dE_warm < dE_cold  else "cold"
+            better_fid = "warm ✓" if mean_warm_fid > mean_cold_fid else "cold"
+            iter_save  = mean_cold_nit - mean_warm_nit
+
+            print(f"\n  k={lr.k}")
+            print(f"    best E    warm={best_warm_E:.8f}  cold={best_cold_E:.8f}  "
+                  f"→ {better_E}")
+            print(f"    |ΔE|      warm={dE_warm:.6f}    cold={dE_cold:.6f}")
+            print(f"    fidelity  warm={mean_warm_fid:.4f}         cold={mean_cold_fid:.4f}  "
+                  f"→ {better_fid}")
+            print(f"    iter save {iter_save:+.0f} iters  "
+                  f"(warm avg={mean_warm_nit:.0f}, cold avg={mean_cold_nit:.0f})")
+
+        if not has_comparison:
+            print("  (no paired warm/cold restarts recorded — "
+                  "set N_COLD_RESTARTS > 0 to enable cold baseline)")
+
+        # ── x0 decomposition ─────────────────────────────────────────
+        print(f"\n  [4]  INIT VECTOR DECOMPOSITION  (norms by block)")
+        print(thin)
+        print(f"  {'k':<4} {'restart':<10} {'kind':<14} "
+              f"{'‖x0‖':>10} {'‖Jastrow‖':>12} {'‖Givens‖':>12}")
+        print("  " + "-" * (W - 2))
+        for lr in sorted(self.layers, key=lambda l: l.k):
+            for r in lr.restarts:
+                print(f"  {lr.k:<4} {r.restart_idx:<10} {r.kind:<14} "
+                      f"{r.x0_norm:>10.5f} {r.x0_jastrow_norm:>12.5f} "
+                      f"{r.x0_givens_norm:>12.5f}")
+
+    def _print_verdict(self):
+        all_warm = [r for lr in self.layers for r in lr.warm_restarts]
+        all_cold = [r for lr in self.layers for r in lr.cold_restarts]
+
+        if not all_warm:
+            print("  No warm restarts recorded.")
+            return
+
+        signals = []
+
+        # Signal 1: energy
+        if all_cold:
+            bw = min(r.E_final for r in all_warm)
+            bc = min(r.E_final for r in all_cold)
+            if bw < bc:
+                signals.append((True,  f"Energy: warm finds ΔE={abs(bw-self.e_exact):.6f} "
+                                        f"vs cold ΔE={abs(bc-self.e_exact):.6f}"))
+            else:
+                signals.append((False, f"Energy: cold start wins — warm may be biased by VMC error"))
+
+        # Signal 2: iterations
+        if all_cold:
+            mw = np.mean([r.nit for r in all_warm])
+            mc = np.mean([r.nit for r in all_cold])
+            save_pct = 100 * (mc - mw) / (mc + 1e-9)
+            if mw < mc:
+                signals.append((True,  f"Iterations: warm saves {mc-mw:.0f} iters avg "
+                                        f"({save_pct:.0f}% fewer)"))
+            else:
+                signals.append((False, f"Iterations: warm needs more iters — landscape ill-conditioned at init"))
+
+        # Signal 3: fidelity
+        if all_cold:
+            fw = np.mean([r.fidelity for r in all_warm])
+            fc = np.mean([r.fidelity for r in all_cold])
+            if fw > fc:
+                signals.append((True,  f"Fidelity: warm avg {fw:.4f} vs cold avg {fc:.4f} "
+                                        f"(+{fw-fc:.4f})"))
+            else:
+                signals.append((False, f"Fidelity: cold avg {fc:.4f} > warm avg {fw:.4f} "
+                                        f"— warm init not encoding useful structure"))
+
+        # Signal 4: Jastrow SNR
+        if self.jastrow_signal:
+            snr = self.jastrow_signal["snr"]
+            if snr > 5:
+                signals.append((True,  f"Jastrow SNR={snr:.1f} — VMC correlators providing strong signal"))
+            elif snr > 2:
+                signals.append((None,  f"Jastrow SNR={snr:.1f} — moderate signal; noise comparable"))
+            else:
+                signals.append((False, f"Jastrow SNR={snr:.1f} — warm start is mostly noise; "
+                                        f"try larger VMC n_samples"))
+
+        # Signal 5: imaginary Givens (g variant only)
+        if self.variant == 'g' and "im_snr" in self.rdm_signal:
+            snr_im = self.rdm_signal["im_snr"]
+            if snr_im < 2:
+                signals.append((False, f"Im(ρ) SNR={snr_im:.1f} — imaginary Givens warm start adds noise; "
+                                        f"consider dropping 'g' variant or zeroing Im block"))
+
+        for ok, msg in signals:
+            icon = "✓" if ok is True else ("~" if ok is None else "✗")
+            print(f"  [{icon}] {msg}")
+
+        n_good = sum(1 for ok, _ in signals if ok is True)
+        n_bad  = sum(1 for ok, _ in signals if ok is False)
+        print()
+        if n_good >= 3 and n_bad == 0:
+            print("  OVERALL: warm start is clearly effective.")
+        elif n_good > n_bad:
+            print("  OVERALL: warm start helps on balance; address flagged issues.")
+        else:
+            print("  OVERALL: warm start may not be helping — see flagged issues above.")
+
+
+# =============================================================================
+# EXACT DIAGONALISATION  (CPU, arbitrary lattice edges)
+# =============================================================================
+def build_basis(n, n_up):
+    return np.array([b for b in range(1 << n) if bin(b).count('1') == n_up],
+                    dtype=np.int64)
+
+
+# CHANGED: accepts nn_edges/nnn_edges directly instead of n/j1/j2/pbc
+def build_hamiltonian(n, n_up, nn_edges, nnn_edges, j1=J1, j2=J2):
+    """
+    Sparse J1-J2 Heisenberg Hamiltonian in the fixed-Sz sector.
+    Bonds are taken from nn_edges (coupling j1) and nnn_edges (coupling j2).
+    """
+    basis   = build_basis(n, n_up)
+    idx_map = {int(b): i for i, b in enumerate(basis)}
+    H       = lil_matrix((len(basis), len(basis)), dtype=np.float64)
+
+    for edges, j in [(nn_edges, j1), (nnn_edges, j2)]:
+        for si, sj in edges:
+            for row, bits in enumerate(basis):
+                zi = 0.5 if (bits >> si) & 1 else -0.5
+                zj = 0.5 if (bits >> sj) & 1 else -0.5
+                H[row, row] += j * zi * zj
+                if ((bits >> si) & 1) != ((bits >> sj) & 1):
+                    fl  = bits ^ (1 << si) ^ (1 << sj)
+                    col = idx_map.get(int(fl), -1)
+                    if col >= 0:
+                        H[row, col] += 0.5 * j
+
+    return csr_matrix(H), basis, idx_map
+
+
+def get_n_up(n):
+    return (n + 1) // 2 if n % 2 == 1 else n // 2
+
+
+# =============================================================================
+# JAX HAMILTONIAN  (GPU, arbitrary lattice edges)
+# =============================================================================
+# CHANGED: accepts nn_edges/nnn_edges directly
+def build_jax_hamiltonian(n, n_up, nn_edges, nnn_edges, j1=J1, j2=J2):
+    """
+    COO-format J1-J2 Hamiltonian for GPU matrix-vector products via JAX.
+    Bonds are taken from nn_edges (coupling j1) and nnn_edges (coupling j2).
+    """
+    basis_list = [b for b in range(1 << n) if bin(b).count('1') == n_up]
+    idx_map    = {b: i for i, b in enumerate(basis_list)}
+    rows, cols, vals = [], [], []
+
+    for edges, j in [(nn_edges, j1), (nnn_edges, j2)]:
+        for i, js in edges:
+            for row, bits in enumerate(basis_list):
+                zi = 0.5 if (bits >> i) & 1 else -0.5
+                zj = 0.5 if (bits >> js) & 1 else -0.5
+                rows.append(row); cols.append(row); vals.append(j * zi * zj)
+                if ((bits >> i) & 1) != ((bits >> js) & 1):
+                    fl = bits ^ (1 << i) ^ (1 << js)
+                    if fl in idx_map:
+                        rows.append(row)
+                        cols.append(idx_map[fl])
+                        vals.append(0.5 * j)
+
+    h_rows = _to_device(jnp.array(rows, dtype=jnp.int32))
+    h_cols = _to_device(jnp.array(cols, dtype=jnp.int32))
+    h_vals = _to_device(jnp.array(vals, dtype=jnp.float64))
+    return h_rows, h_cols, h_vals
+
+
+def make_apply_H(h_rows, h_cols, h_vals, dim):
+    @jax.jit
+    def apply_H(psi):
+        return (jnp.zeros(dim, dtype=psi.dtype)
+                .at[h_rows].add(h_vals * psi[h_cols]))
+    return apply_H
+
+
+def neel_state(n, n_up, basis, idx_map):
+    neel_bits = sum(1 << i for i in range(n) if i % 2 == 0)
+    psi = jnp.zeros(len(basis), dtype=jnp.complex128)
+    psi = psi.at[idx_map[neel_bits]].set(1.0)
+    return _to_device(psi)
+
+
+# =============================================================================
+# JASTROW
+# =============================================================================
+def build_jastrow_indices(n, basis):
+    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+    pair_i_np = np.array([p[0] for p in pairs], dtype=np.int32)
+    pair_j_np = np.array([p[1] for p in pairs], dtype=np.int32)
+    basis_bits_gpu = _to_device(jnp.array(basis, dtype=jnp.int32))
+    return pair_i_np, pair_j_np, basis_bits_gpu
+
+
+def _make_jastrow_phase_fn(pair_i_np, pair_j_np, basis_bits_gpu):
+    pi_gpu = _to_device(jnp.array(pair_i_np, dtype=jnp.int32))
+    pj_gpu = _to_device(jnp.array(pair_j_np, dtype=jnp.int32))
+
+    if not JASTROW_CHUNKED:
+        def _occ_product(i, j):
+            bi = (basis_bits_gpu >> i.astype(jnp.int32)) & 1
+            bj = (basis_bits_gpu >> j.astype(jnp.int32)) & 1
+            return (bi * bj).astype(jnp.float64)
+
+        _occ_mat_fn = jax.vmap(_occ_product)
+
+        @jax.jit
+        def jastrow_phase(theta_J):
+            return jnp.dot(theta_J, _occ_mat_fn(pi_gpu, pj_gpu))
+    else:
+        n_pair = pair_i_np.shape[0]
+        chunk  = JASTROW_CHUNK
+
+        @jax.jit
+        def jastrow_phase(theta_J):
+            phase = jnp.zeros(basis_bits_gpu.shape[0], dtype=jnp.float64)
+            for start in range(0, n_pair, chunk):
+                end  = min(start + chunk, n_pair)
+                pi_c = pi_gpu[start:end]
+                pj_c = pj_gpu[start:end]
+                th_c = theta_J[start:end]
+                def _occ_c(i, j):
+                    bi = (basis_bits_gpu >> i.astype(jnp.int32)) & 1
+                    bj = (basis_bits_gpu >> j.astype(jnp.int32)) & 1
+                    return (bi * bj).astype(jnp.float64)
+                phase = phase + jnp.dot(th_c, jax.vmap(_occ_c)(pi_c, pj_c))
+            return phase
+
+    return jastrow_phase
+
+
+def apply_jastrow(psi, theta_J, jastrow_phase_fn):
+    return psi * jnp.exp(1j * jastrow_phase_fn(theta_J))
+
+
+# =============================================================================
+# GIVENS PAIRS
+# =============================================================================
+def build_givens_pairs(n, basis, idx_map):
+    srcs_ragged, dsts_ragged = [], []
+    for i in range(n):
+        for j in range(i + 1, n):
+            srcs, dsts = [], []
+            for row, bits in enumerate(basis):
+                if ((bits >> i) & 1) and not ((bits >> j) & 1):
+                    flipped = bits ^ (1 << i) ^ (1 << j)
+                    if flipped in idx_map:
+                        srcs.append(row)
+                        dsts.append(idx_map[flipped])
+            srcs_ragged.append(np.array(srcs, dtype=np.int32))
+            dsts_ragged.append(np.array(dsts, dtype=np.int32))
+
+    counts  = np.array([len(s) for s in srcs_ragged], dtype=np.int32)
+    row_ptr = np.zeros(len(counts) + 1, dtype=np.int32)
+    row_ptr[1:] = np.cumsum(counts)
+
+    srcs_cat = (np.concatenate(srcs_ragged) if srcs_ragged
+                else np.array([], dtype=np.int32))
+    dsts_cat = (np.concatenate(dsts_ragged) if dsts_ragged
+                else np.array([], dtype=np.int32))
+
+    srcs_flat_gpu = _to_device(jnp.array(srcs_cat, dtype=jnp.int32))
+    dsts_flat_gpu = _to_device(jnp.array(dsts_cat, dtype=jnp.int32))
+
+    nnz    = len(srcs_cat)
+    n_pair = n * (n - 1) // 2
+    print(f"[GivensPairs N={n}]  n_pair={n_pair}  total_nnz={nnz}  "
+          f"GPU mem≈{nnz*2*4/1e6:.1f} MB  device={_JAX_DEVICE}")
+    return srcs_flat_gpu, dsts_flat_gpu, row_ptr
+
+
+# =============================================================================
+# GIVENS SCAN
+# =============================================================================
+def _givens_scan_csr(psi, thetas, srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+                     imag=False):
+    n_pair = row_ptr_np.shape[0] - 1
+    for k in range(n_pair):
+        start = int(row_ptr_np[k])
+        end   = int(row_ptr_np[k + 1])
+        if start == end:
+            continue
+        srcs_k = srcs_flat_gpu[start:end]
+        dsts_k = dsts_flat_gpu[start:end]
+        c = jnp.cos(thetas[k])
+        s = jnp.sin(thetas[k])
+        p_s, p_d = psi[srcs_k], psi[dsts_k]
+        if imag:
+            new_s =  c * p_s - 1j * s * p_d
+            new_d = -1j * s * p_s + c * p_d
+        else:
+            new_s = c * p_s - s * p_d
+            new_d = s * p_s + c * p_d
+        psi = psi.at[srcs_k].set(new_s).at[dsts_k].set(new_d)
+    return psi
+
+
+# =============================================================================
+# RBM  (NetKet)
+# =============================================================================
+class RBMModel(nn.Module):
+    alpha: int = 1
+
+    @nn.compact
+    def __call__(self, x):
+        x = x.astype(jnp.complex128)
+        a = self.param('visible_bias', nn.initializers.normal(0.05),
+                       (x.shape[-1],), jnp.complex128)
+        W = nn.Dense(self.alpha * x.shape[-1], use_bias=True,
+                     dtype=jnp.complex128, param_dtype=jnp.complex128,
+                     kernel_init=nn.initializers.normal(0.05),
+                     bias_init=nn.initializers.normal(0.05))
+        return jnp.dot(x, a) + jnp.sum(nknn.activation.log_cosh(W(x)), axis=-1)
+
+
+# CHANGED: accepts nn_edges/nnn_edges instead of relying on graph structure
+def build_netket_hamiltonian(n: int, nn_edges: list, nnn_edges: list,
+                              j1: float = J1, j2: float = J2,
+                              total_sz: float | None = None
+                              ) -> tuple[nk.operator.LocalOperator, nk.hilbert.Spin]:
+    """
+    Build a NetKet J1-J2 Heisenberg operator from explicit edge lists.
+    Bonds in nn_edges use coupling j1; bonds in nnn_edges use coupling j2.
+
+    Returns (hamiltonian, hilbert_space).
+    """
+    n_up = get_n_up(n)
+    if total_sz is None:
+        total_sz = (n_up - (n - n_up)) / 2.0
+
+    hi = nk.hilbert.Spin(s=0.5, N=n, total_sz=total_sz)
+
+    Sp = np.array([[0, 1], [0, 0]], dtype=complex)
+    Sm = np.array([[0, 0], [1, 0]], dtype=complex)
+    Sz = np.array([[0.5, 0], [0, -0.5]], dtype=complex)
+
+    SzSz  = np.kron(Sz, Sz)
+    SpSm  = 0.5 * np.kron(Sp, Sm)
+    SmSp  = 0.5 * np.kron(Sm, Sp)
+    heis2 = SzSz + SpSm + SmSp
+
+    ha = nk.operator.LocalOperator(hi, dtype=complex)
+    for si, sj in nn_edges:
+        ha += j1 * nk.operator.LocalOperator(hi, heis2, acting_on=[si, sj])
+    for si, sj in nnn_edges:
+        ha += j2 * nk.operator.LocalOperator(hi, heis2, acting_on=[si, sj])
+
+    print(f"[NetKet Hamiltonian]  N={n}  J1={j1}  J2={j2}  "
+          f"NN={len(nn_edges)}  NNN={len(nnn_edges)}")
+    return ha, hi
+
+
+def run_netket_vmc(n: int, e_exact: float,
+                   total_sz: float | None = None,
+                   hamiltonian: nk.operator.AbstractOperator | None = None,
+                   ) -> tuple:
+    """
+    Run RBM-VMC with NetKet.
+    """
+    n_up = get_n_up(n)
+    if total_sz is None:
+        total_sz = (n_up - (n - n_up)) / 2.0
+
+    def stop_at_threshold(step, log_data, driver):
+        diff = abs(driver.energy.mean.real - e_exact)
+        if diff < 1e-6:
+            print(f"\n[VMC early stop] step={step}  |ΔE|={diff:.2e}")
+            return False
+        return True
+
+    if hamiltonian is not None:
+        ha = hamiltonian
+        hi = ha.hilbert
+        print(f"[VMC]  using supplied hamiltonian  hilbert={hi}")
+    else:
+        hi = nk.hilbert.Spin(s=0.5, N=n, total_sz=total_sz)
+        ha = nk.operator.Heisenberg(hilbert=hi,
+                                     graph=nk.graph.Chain(n, pbc=PBC),
+                                     J=J1 / 4.0)
+        print(f"[VMC]  using default J1 Heisenberg chain  J1={J1}")
+
+    sa  = nk.sampler.MetropolisExchange(hi, n_chains=16,
+                                        graph=nk.graph.Chain(n))
+    vs  = nk.vqs.MCState(sa, RBMModel(alpha=ALPHA),
+                          n_samples=VMC_SAMPLES, seed=SEED)
+    opt = optax.sgd(learning_rate=0.05)
+    gs  = nk.driver.VMC(hamiltonian=ha, optimizer=opt, variational_state=vs,
+                         preconditioner=nk.optimizer.SR(diag_shift=0.01))
+    gs.run(n_iter=VMC_STEPS, out=nk.logging.RuntimeLog(),
+           callback=stop_at_threshold)
+    E_rbm = float(np.real(vs.expect(ha).mean))
+    print(f"[VMC]  E_rbm={E_rbm:.6f}  E_exact={e_exact:.6f}")
+    return vs, ha
+
+
+def extract_ucj_correlators(vs, n, basis, idx_map):
+    def log_psi(sigma_batch):
+        raw = vs.log_value(jnp.array(sigma_batch, dtype=jnp.float32))
+        return np.array(raw, dtype=np.complex128)
+
+    basis_arr = np.array(
+        [[(1 if (b >> s) & 1 else -1) for s in range(n)] for b in basis],
+        dtype=np.float32)
+
+    log_vals = log_psi(basis_arr)
+    log_amps = log_vals - np.max(np.real(log_vals))
+    psi      = np.exp(log_amps)
+    probs    = np.abs(psi) ** 2
+    probs   /= probs.sum()
+
+    occ    = (basis_arr + 1) / 2
+    n_mean = (probs[:, None] * occ).sum(0)
+
+    nn_mean   = np.einsum('d,di,dj->ij', probs, occ, occ)
+    C_jastrow = nn_mean - np.outer(n_mean, n_mean)
+
+    rho = np.diag(n_mean.astype(complex))
+    for i in range(n):
+        for j in range(i + 1, n):
+            mask = (basis_arr[:, i] == 1) & (basis_arr[:, j] == -1)
+            if not mask.any():
+                continue
+            sigma_v       = basis_arr[mask]
+            sigma_f       = sigma_v.copy()
+            sigma_f[:, i] = -1
+            sigma_f[:, j] =  1
+            ratio    = np.exp(log_psi(sigma_f) - log_psi(sigma_v))
+            jw_signs = np.array([
+                (-1) ** int(((sigma_v[k, i+1:j] + 1) / 2).sum())
+                for k in range(sigma_v.shape[0])])
+            rho_ij    = (probs[mask] * jw_signs * ratio).sum()
+            rho[i, j] = rho_ij
+            rho[j, i] = np.conj(rho_ij)
+
+    rho_real = np.zeros((n, n), dtype=np.float64)
+    rho_imag = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(i + 1, n):
+            rho_real[i, j] =  np.real(rho[i, j])
+            rho_real[j, i] =  np.real(rho[i, j])
+            rho_imag[i, j] =  np.imag(rho[i, j])
+            rho_imag[j, i] = -np.imag(rho[i, j])
+
+    print(f"\n[RDM analysis]  N={n}")
+    print(f"  max |Im(rho_ij)| = {np.max(np.abs(rho_imag)):.6f}")
+    print(f"  max |Re(rho_ij)| = {np.max(np.abs(rho_real)):.6f}")
+    return C_jastrow, rho_real, rho_imag
+
+
+def print_init_signal(C_jastrow: np.ndarray,
+                      rho_real:  np.ndarray | None = None,
+                      rho_imag:  np.ndarray | None = None,
+                      noise_scale: float = 0.01):
+    """Quick print of warm-start SNR without a full DiagnosticTracker."""
+    n = C_jastrow.shape[0]
+    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+    J = np.array([C_jastrow[i, j] for i, j in pairs])
+    print(f"\n[warm-start signal  N={n}  noise_scale={noise_scale}]")
+    print(f"  Jastrow  max|J|={np.max(np.abs(J)):.5f}  "
+          f"mean|J|={np.mean(np.abs(J)):.5f}  "
+          f"SNR={np.max(np.abs(J))/noise_scale:.1f}x")
+    if rho_real is not None:
+        Re = np.array([rho_real[i, j] for i, j in pairs])
+        print(f"  Re(ρ)    max={np.max(np.abs(Re)):.5f}  "
+              f"mean={np.mean(np.abs(Re)):.5f}  "
+              f"SNR={np.max(np.abs(Re))/noise_scale:.1f}x")
+    if rho_imag is not None:
+        Im = np.array([rho_imag[i, j] for i, j in pairs])
+        print(f"  Im(ρ)    max={np.max(np.abs(Im)):.5f}  "
+              f"mean={np.mean(np.abs(Im)):.5f}  "
+              f"SNR={np.max(np.abs(Im))/noise_scale:.1f}x")
+        if np.max(np.abs(Im)) < 2 * noise_scale:
+            print("  WARNING: Im(ρ) signal ≈ noise — "
+                  "imaginary Givens warm start may not help.")
+
+
+# =============================================================================
+# ANSATZ STATE BUILDERS
+# =============================================================================
+def ucj_state_re(theta, k_layers, psi0, n_pair,
+                 srcs_flat_gpu, dsts_flat_gpu, row_ptr_np, jastrow_phase_fn):
+    psi = psi0
+    for layer in range(k_layers):
+        off = layer * 2 * n_pair
+        psi = apply_jastrow(psi, theta[off:off+n_pair], jastrow_phase_fn)
+        psi = _givens_scan_csr(psi, theta[off+n_pair:off+2*n_pair],
+                               srcs_flat_gpu, dsts_flat_gpu, row_ptr_np)
+    return psi
+
+
+def ucj_state_im(theta, k_layers, psi0, n_pair,
+                 srcs_flat_gpu, dsts_flat_gpu, row_ptr_np, jastrow_phase_fn):
+    psi = psi0
+    for layer in range(k_layers):
+        off = layer * 2 * n_pair
+        psi = apply_jastrow(psi, theta[off:off+n_pair], jastrow_phase_fn)
+        psi = _givens_scan_csr(psi, theta[off+n_pair:off+2*n_pair],
+                               srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+                               imag=True)
+    return psi
+
+
+def ucj_state_g(theta, k_layers, psi0, n_pair,
+                srcs_flat_gpu, dsts_flat_gpu, row_ptr_np, jastrow_phase_fn):
+    psi = psi0
+    for layer in range(k_layers):
+        off = layer * 3 * n_pair
+        psi = apply_jastrow(psi, theta[off:off+n_pair], jastrow_phase_fn)
+        psi = _givens_scan_csr(psi, theta[off+n_pair:off+2*n_pair],
+                               srcs_flat_gpu, dsts_flat_gpu, row_ptr_np)
+        psi = _givens_scan_csr(psi, theta[off+2*n_pair:off+3*n_pair],
+                               srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+                               imag=True)
+    return psi
+
+
+def _energy(psi, apply_H):
+    norm = jnp.dot(jnp.conj(psi), psi)
+    return jnp.real(jnp.dot(jnp.conj(psi), apply_H(psi)) / norm)
+
+
+def make_energy_grad(variant, n, k_layers, psi0,
+                     srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+                     jastrow_phase_fn, apply_H):
+    n_pair = n * (n - 1) // 2
+    _state_fns = {
+        're': lambda th: ucj_state_re(th, k_layers, psi0, n_pair,
+                                       srcs_flat_gpu, dsts_flat_gpu,
+                                       row_ptr_np, jastrow_phase_fn),
+        'im': lambda th: ucj_state_im(th, k_layers, psi0, n_pair,
+                                       srcs_flat_gpu, dsts_flat_gpu,
+                                       row_ptr_np, jastrow_phase_fn),
+        'g':  lambda th: ucj_state_g(th, k_layers, psi0, n_pair,
+                                      srcs_flat_gpu, dsts_flat_gpu,
+                                      row_ptr_np, jastrow_phase_fn),
+    }
+    state_fn = _state_fns[variant]
+
+    def efn(theta_gpu):
+        return _energy(state_fn(theta_gpu), apply_H)
+
+    jit_val_grad = jax.jit(jax.value_and_grad(efn, holomorphic=False))
+    jit_efn      = jax.jit(efn)
+    return jit_val_grad, jit_efn
+
+
+def fidelity(theta, variant, k_layers, psi0, psi_exact_gpu,
+             srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+             jastrow_phase_fn, n):
+    n_pair    = n * (n - 1) // 2
+    theta_gpu = _to_device(jnp.array(theta, dtype=jnp.float64))
+    _state_fns = {
+        're': lambda th: ucj_state_re(th, k_layers, psi0, n_pair,
+                                       srcs_flat_gpu, dsts_flat_gpu,
+                                       row_ptr_np, jastrow_phase_fn),
+        'im': lambda th: ucj_state_im(th, k_layers, psi0, n_pair,
+                                       srcs_flat_gpu, dsts_flat_gpu,
+                                       row_ptr_np, jastrow_phase_fn),
+        'g':  lambda th: ucj_state_g(th, k_layers, psi0, n_pair,
+                                      srcs_flat_gpu, dsts_flat_gpu,
+                                      row_ptr_np, jastrow_phase_fn),
+    }
+    psi = _state_fns[variant](theta_gpu)
+    return float(jnp.abs(jnp.dot(jnp.conj(psi_exact_gpu), psi)) ** 2)
+
+
+# =============================================================================
+# WARM-START
+# =============================================================================
+def _upper_flat(mat, n):
+    return np.array([mat[i, j] for i in range(n) for j in range(i+1, n)])
+
+
+def warm_start(variant, C_jastrow, n, k_layers, rho_real=None, rho_imag=None,
+               seed=SEED, noise_scale=0.01):
+    n_pair    = n * (n - 1) // 2
+    rng       = np.random.default_rng(seed)
+    J_flat    = _upper_flat(C_jastrow, n)
+    K_re_flat = _upper_flat(rho_real, n) if rho_real is not None else np.zeros(n_pair)
+    K_im_flat = _upper_flat(rho_imag, n) if rho_imag is not None else np.zeros(n_pair)
+
+    out = []
+    for layer in range(k_layers):
+        fresh = (layer == 0)
+        noise = lambda: noise_scale * rng.standard_normal(n_pair)
+        out.append((J_flat + noise()) if fresh else noise())
+        if variant == 'im':
+            out.append((K_im_flat + noise()) if fresh else noise())
+        elif variant == 're':
+            out.append((K_re_flat + noise()) if fresh else noise())
+        else:  # 'g'
+            out.append((K_re_flat + noise()) if fresh else noise())
+            out.append((K_im_flat + noise()) if fresh else noise())
+    return np.concatenate(out)
+
+
+# =============================================================================
+# INSTRUMENTED L-BFGS  (diagnostic-aware optimiser)
+# =============================================================================
+def _optimise_layer_instrumented(
+    tracker:      DiagnosticTracker,
+    variant:      str,
+    n:            int,
+    k:            int,
+    x0:           np.ndarray,
+    x0_kind:      str,
+    restart_idx:  int,
+    e_exact:      float,
+    e_tol:        float,
+    val_grad_fn,
+    fidelity_fn,
+    n_pair:       int,
+    lbfgs_maxiter: int = LBFGS_MAXITER,
+    lbfgs_maxfun:  int = LBFGS_MAXFUN,
+) -> tuple[np.ndarray, float, RestartRecord]:
+    x0_jJ      = x0[:n_pair]
+    x0_gK      = x0[n_pair:]
+    x0_norm    = float(np.linalg.norm(x0))
+    x0_jJ_norm = float(np.linalg.norm(x0_jJ))
+    x0_gK_norm = float(np.linalg.norm(x0_gK))
+
+    x0_gpu = _to_device(jnp.array(x0, dtype=jnp.float64))
+    val_grad_fn(x0_gpu)
+
+    def scipy_fn(x_np):
+        x_gpu = _to_device(jnp.array(x_np, dtype=jnp.float64))
+        E, g  = val_grad_fn(x_gpu)
+        return float(E), np.array(g, dtype=np.float64)
+
+    t0 = time.perf_counter()
+    result = scipy_minimize(
+        scipy_fn, x0, jac=True, method="L-BFGS-B",
+        options={"maxiter": lbfgs_maxiter, "maxfun": lbfgs_maxfun,
+                 "ftol": 1e-14, "gtol": 1e-8})
+    wall = time.perf_counter() - t0
+
+    opt_x = np.array(result.x)
+    opt_E = float(result.fun)
+    fid   = fidelity_fn(opt_x)
+
+    record = RestartRecord(
+        restart_idx=restart_idx,
+        kind=x0_kind,
+        x0_norm=x0_norm,
+        x0_jastrow_norm=x0_jJ_norm,
+        x0_givens_norm=x0_gK_norm,
+        E_final=opt_E,
+        fidelity=fid,
+        nit=result.nit,
+        nfev=result.nfev,
+        wall_sec=wall,
+        converged=abs(opt_E - e_exact) < e_tol,
+    )
+    tracker.log_restart(k, record)
+
+    print(f"  [{x0_kind:>14} restart={restart_idx}  k={k}]  "
+          f"E={opt_E:.8f}  |ΔE|={abs(opt_E-e_exact):.4e}  "
+          f"|<ψ|exact>|²={fid:.6f}  nit={result.nit}  nfev={result.nfev}  "
+          f"t={wall:.1f}s")
+
+    return opt_x, opt_E, record
+
+
+def _cold_baseline(
+    tracker:      DiagnosticTracker,
+    k:            int,
+    n_pair:       int,
+    n_restarts:   int,
+    e_exact:      float,
+    e_tol:        float,
+    val_grad_fn,
+    fidelity_fn,
+    noise_scale:  float = 0.05,
+    seed:         int   = 9999,
+):
+    variant = tracker.variant
+    n       = tracker.n
+    rng     = np.random.default_rng(seed + k * 1000)
+    stride  = 3 * n_pair if variant == "g" else 2 * n_pair
+
+    print(f"\n  [cold baseline  k={k}  n_restarts={n_restarts}]")
+    for i in range(n_restarts):
+        x0_cold = noise_scale * rng.standard_normal(k * stride)
+        _optimise_layer_instrumented(
+            tracker=tracker, variant=variant, n=n, k=k,
+            x0=x0_cold, x0_kind="cold", restart_idx=i,
+            e_exact=e_exact, e_tol=e_tol,
+            val_grad_fn=val_grad_fn, fidelity_fn=fidelity_fn,
+            n_pair=n_pair)
+
+
+# =============================================================================
+# ADAPTIVE LAYER SEARCH  (instrumented)
+# =============================================================================
+def adaptive_ucj(variant, n, k_max, e_tol, C_jastrow, e_exact,
+                 psi_neel, psi_exact_gpu,
+                 srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+                 jastrow_phase_fn, apply_H,
+                 tracker: DiagnosticTracker,
+                 K_real=None, K_imag=None,
+                 n_restarts=N_RESTARTS,
+                 n_cold_restarts=N_COLD_RESTARTS):
+    best        = dict(E=np.inf, fid=0., params=None, k=1)
+    prev_params = None
+    n_pair      = n * (n - 1) // 2
+
+    for k in range(1, k_max + 1):
+        layer_best = dict(E=np.inf, params=None, fid=0.)
+
+        val_grad_fn, _ = make_energy_grad(
+            variant, n, k, psi_neel,
+            srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+            jastrow_phase_fn, apply_H)
+
+        def fid_fn(x):
+            return fidelity(x, variant, k, psi_neel, psi_exact_gpu,
+                            srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+                            jastrow_phase_fn, n)
+
+        for restart in range(n_restarts):
+            rng = np.random.default_rng(SEED + k * 100 + restart)
+
+            if prev_params is None:
+                x0      = warm_start(variant, C_jastrow, n, k,
+                                     K_real, K_imag, seed=SEED + restart)
+                x0_kind = "warm"
+            else:
+                noise = lambda m: 0.05 * rng.standard_normal(m)
+                if variant == 'g':
+                    new_layer = np.concatenate([
+                        _upper_flat(C_jastrow, n) + 0.01 * rng.standard_normal(n_pair),
+                        noise(n_pair), noise(n_pair)])
+                else:
+                    new_layer = np.concatenate([
+                        _upper_flat(C_jastrow, n) + 0.01 * rng.standard_normal(n_pair),
+                        noise(n_pair)])
+                x0      = np.concatenate([prev_params, new_layer])
+                x0_kind = "layer_append"
+
+            opt_x, opt_E, record = _optimise_layer_instrumented(
+                tracker=tracker, variant=variant, n=n, k=k,
+                x0=x0, x0_kind=x0_kind, restart_idx=restart,
+                e_exact=e_exact, e_tol=e_tol,
+                val_grad_fn=val_grad_fn, fidelity_fn=fid_fn,
+                n_pair=n_pair)
+
+            if opt_E < layer_best['E']:
+                layer_best.update(E=opt_E, params=opt_x, fid=record.fidelity)
+            if record.converged:
+                break
+
+        if n_cold_restarts > 0:
+            _cold_baseline(
+                tracker=tracker, k=k, n_pair=n_pair,
+                n_restarts=n_cold_restarts,
+                e_exact=e_exact, e_tol=e_tol,
+                val_grad_fn=val_grad_fn, fidelity_fn=fid_fn)
+
+        prev_params = layer_best['params']
+        if layer_best['E'] < best['E']:
+            best.update(**layer_best, k=k)
+
+        delta = abs(layer_best['E'] - e_exact)
+        print(f"[{variant}-uCJ k={k}]  E={layer_best['E']:.8f}  |ΔE|={delta:.4e}")
+        if delta < e_tol:
+            print(f"  Converged at k={k}.")
+            break
+
+    return best
+
+
+# =============================================================================
+# PENNYLANE CIRCUIT BUILDER
+# =============================================================================
+def _pl_xy(theta: float, q0: int, q1: int):
+    """Unphased XX+YY rotation (imag Givens)."""
+    qml.IsingXX(-theta, wires=[q0, q1])
+    qml.IsingYY(-theta, wires=[q0, q1])
+
+
+def _pl_xy_phased(theta: float, q0: int, q1: int):
+    """Phased XX+YY rotation (real Givens)."""
+    qml.RZ(-np.pi / 2, wires=q1)
+    qml.IsingXX(-theta, wires=[q0, q1])
+    qml.IsingYY(-theta, wires=[q0, q1])
+    qml.RZ(np.pi / 2, wires=q1)
+
+
+def build_ucj_pennylane(n: int, k_layers: int, variant: str, pairs=None):
+    """Returns ucj_circuit(params) as a PennyLane-compatible callable."""
+    if pairs is None:
+        pairs = [(i, j) for i in range(n) for j in range(i+1, n)]
+    n_pair = len(pairs)
+    stride = 3 * n_pair if variant == 'g' else 2 * n_pair
+
+    def ucj_circuit(params):
+        for i in range(n):
+            if i % 2 == 0:
+                qml.PauliX(wires=i)
+
+        for l in range(k_layers):
+            off  = l * stride
+            tJ   = params[off          : off + n_pair]
+            tK_r = params[off + n_pair : off + 2 * n_pair]
+            tK_i = (params[off + 2 * n_pair : off + 3 * n_pair]
+                    if variant == 'g' else None)
+
+            for k, (i, j) in enumerate(pairs):
+                qml.ControlledPhaseShift(float(tJ[k]), wires=[i, j])
+
+            if variant == 'im':
+                for k, (i, j) in enumerate(pairs):
+                    _pl_xy(float(tK_r[k]), j, i)
+            else:
+                for k, (i, j) in enumerate(pairs):
+                    _pl_xy_phased(float(tK_r[k]), j, i)
+                if variant == 'g':
+                    for k, (i, j) in enumerate(pairs):
+                        _pl_xy(float(tK_i[k]), j, i)
+
+    return ucj_circuit
+
+
+# =============================================================================
+# PENNYLANE HAMILTONIAN  (arbitrary lattice edges)
+# =============================================================================
+# CHANGED: accepts nn_edges/nnn_edges directly
+def build_heisenberg_pennylane(n: int, nn_edges: list, nnn_edges: list,
+                                j1: float = J1, j2: float = J2):
+    """
+    Build PennyLane coeffs/obs for the J1-J2 Heisenberg Hamiltonian
+    from explicit bond lists.
+    """
+    coeffs, obs = [], []
+    for edges, j in [(nn_edges, j1), (nnn_edges, j2)]:
+        for si, sj in edges:
+            for Qop in [qml.PauliX, qml.PauliY, qml.PauliZ]:
+                coeffs.append(j / 4.0)
+                obs.append(Qop(wires=si) @ Qop(wires=sj))
+
+    return coeffs, obs
+
+
+# =============================================================================
+# NOISELESS PENNYLANE ENERGY
+# =============================================================================
+# CHANGED: accepts nn_edges/nnn_edges
+def energy_noiseless_pl(n: int, k_layers: int, variant: str,
+                         params: np.ndarray,
+                         nn_edges: list, nnn_edges: list,
+                         j1: float = J1, j2: float = J2,
+                         pairs=None) -> float:
+    bond_dim = int(os.environ.get("MPS_BOND_DIM", "64"))
+    try:
+        dev = qml.device("lightning.qubit", wires=n,
+                         method="mps", max_bond_dim=bond_dim)
+    except Exception:
+        dev = qml.device("default.qubit", wires=n)
+
+    coeffs, obs = build_heisenberg_pennylane(n, nn_edges, nnn_edges, j1, j2)
+    circuit     = build_ucj_pennylane(n, k_layers, variant, pairs)
+
+    @qml.qnode(dev, diff_method="best")
+    def qnode(p):
+        circuit(p)
+        return qml.expval(qml.dot(coeffs, obs))
+
+    return float(qnode(params))
+
+
+# =============================================================================
+# STATE OVERLAP
+# =============================================================================
+def state_overlap_pl(params: np.ndarray, variant: str, k_layers: int,
+                     psi_neel, psi_exact_np: np.ndarray,
+                     srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+                     jastrow_phase_fn, n: int) -> dict:
+    n_pair     = n * (n - 1) // 2
+    theta_gpu  = _to_device(jnp.array(params, dtype=jnp.float64))
+    psi_ex_gpu = _to_device(jnp.array(psi_exact_np, dtype=jnp.complex128))
+
+    _state_fns = {
+        're': lambda th: ucj_state_re(th, k_layers, psi_neel, n_pair,
+                                       srcs_flat_gpu, dsts_flat_gpu,
+                                       row_ptr_np, jastrow_phase_fn),
+        'im': lambda th: ucj_state_im(th, k_layers, psi_neel, n_pair,
+                                       srcs_flat_gpu, dsts_flat_gpu,
+                                       row_ptr_np, jastrow_phase_fn),
+        'g':  lambda th: ucj_state_g(th, k_layers, psi_neel, n_pair,
+                                      srcs_flat_gpu, dsts_flat_gpu,
+                                      row_ptr_np, jastrow_phase_fn),
+    }
+    psi_ucj      = _state_fns[variant](theta_gpu)
+    psi_ucj_norm = psi_ucj / jnp.sqrt(jnp.dot(jnp.conj(psi_ucj), psi_ucj))
+    overlap      = float(jnp.abs(jnp.dot(jnp.conj(psi_ex_gpu), psi_ucj_norm)) ** 2)
+
+    # E_pl needs edge lists — fetched from the caller via the results dict,
+    # so just return overlap here; run() calls energy_noiseless_pl separately.
+    print(f"\n[State overlap]  overlap={overlap:.8f}")
+    return dict(overlap=overlap)
+
+
+def rdm_norms_at_convergence(params: np.ndarray, variant: str, k_layers: int,
+                              psi_neel, srcs_flat_gpu, dsts_flat_gpu,
+                              row_ptr_np, jastrow_phase_fn, n: int,
+                              basis, bindex) -> dict:
+    n_pair    = n * (n - 1) // 2
+    theta_gpu = _to_device(jnp.array(params, dtype=jnp.float64))
+
+    _state_fns = {
+        're': lambda th: ucj_state_re(th, k_layers, psi_neel, n_pair,
+                                       srcs_flat_gpu, dsts_flat_gpu,
+                                       row_ptr_np, jastrow_phase_fn),
+        'im': lambda th: ucj_state_im(th, k_layers, psi_neel, n_pair,
+                                       srcs_flat_gpu, dsts_flat_gpu,
+                                       row_ptr_np, jastrow_phase_fn),
+        'g':  lambda th: ucj_state_g(th, k_layers, psi_neel, n_pair,
+                                      srcs_flat_gpu, dsts_flat_gpu,
+                                      row_ptr_np, jastrow_phase_fn),
+    }
+    psi      = np.array(_state_fns[variant](theta_gpu), dtype=np.complex128)
+    psi     /= np.linalg.norm(psi)
+    basis_np = list(basis)
+    idx_map  = bindex
+
+    basis_arr = np.array(
+        [[(1 if (b >> s) & 1 else -1) for s in range(n)] for b in basis_np],
+        dtype=np.float64)
+    occ  = (basis_arr + 1) / 2
+    probs = np.abs(psi) ** 2
+
+    rho = np.zeros((n, n), dtype=np.complex128)
+
+    n_mean = (probs[:, None] * occ).sum(0)
+    for i in range(n):
+        rho[i, i] = n_mean[i]
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            mask = (basis_arr[:, i] == 1) & (basis_arr[:, j] == -1)
+            if not mask.any():
+                continue
+            sigma_v      = basis_arr[mask]
+            flipped_bits = np.array(basis_np)[mask]
+            new_bits     = (flipped_bits ^ (1 << i) ^ (1 << j)).astype(np.int64)
+
+            col_indices = np.array([idx_map.get(int(b), -1) for b in new_bits])
+            valid       = col_indices >= 0
+            if not valid.any():
+                continue
+
+            rows_v  = np.where(mask)[0][valid]
+            rows_f  = col_indices[valid]
+            jw_signs = np.array([
+                (-1) ** int(((sigma_v[k, i+1:j] + 1) / 2).sum())
+                for k in range(sigma_v.shape[0])
+            ])[valid]
+
+            rho_ij       = (np.conj(psi[rows_f]) * psi[rows_v] * jw_signs).sum()
+            rho[i, j]    = rho_ij
+            rho[j, i]    = np.conj(rho_ij)
+
+    mask_offdiag       = ~np.eye(n, dtype=bool)
+    re_frob = np.linalg.norm(np.real(rho)[mask_offdiag])
+    im_frob = np.linalg.norm(np.imag(rho)[mask_offdiag])
+    ratio   = im_frob / (re_frob + 1e-12)
+
+    print(f"\n[RDM @ convergence  {variant}-uCJ  N={n}  k={k_layers}]")
+    print(f"  ‖Re(ρ_ij)‖_F = {re_frob:.6f}")
+    print(f"  ‖Im(ρ_ij)‖_F = {im_frob:.6f}")
+    print(f"  Im/Re ratio  = {ratio:.6f}"
+          + ("  ← Im negligible" if ratio < 0.1 else
+             "  ← Im moderate"   if ratio < 0.5 else
+             "  ← Im significant"))
+
+    return dict(re_frob=re_frob, im_frob=im_frob, ratio=ratio, rho=rho)
+
+
+# =============================================================================
+# CIRCUIT INFO
+# =============================================================================
+def circuit_info_pl(n: int, k_layers: int, variant: str,
+                    params: np.ndarray, pairs=None):
+    circuit = build_ucj_pennylane(n, k_layers, variant, pairs)
+    tape    = qml.tape.make_qscript(circuit)(params)
+
+    gate_counts = {}
+    for op in tape.operations:
+        gate_counts[op.name] = gate_counts.get(op.name, 0) + 1
+
+    print(f"\n[Circuit info: {variant}-uCJ  N={n}  k={k_layers}]")
+    print(f"  depth={len(tape.operations)}  "
+          f"total_gates={sum(gate_counts.values())}")
+    for gate, count in sorted(gate_counts.items(), key=lambda x: -x[1]):
+        print(f"    {gate:<30} {count}")
+    return gate_counts
+
+
+def print_ucj_operators(n: int, k_layers: int, variant: str,
+                        params: np.ndarray, pairs=None):
+    circuit = build_ucj_pennylane(n, k_layers, variant, pairs)
+    tape    = qml.tape.make_qscript(circuit)(params)
+    print(f"\n[UCJ operators: {variant}-uCJ  N={n}  k={k_layers}]")
+    print(f"  {'#':<5} {'Gate':<30} {'Wires':<15} {'Params'}")
+    print(f"  {'─'*70}")
+    for i, op in enumerate(tape.operations):
+        param_str = (f"{[round(float(p), 4) for p in op.parameters]}"
+                     if op.parameters else "—")
+        print(f"  {i:<5} {op.name:<30} {str(list(op.wires)):<15} {param_str}")
+    print(f"\n  Total operators: {len(tape.operations)}")
+
+
+# =============================================================================
+# SHARED QUANTUM STRUCTURES
+# =============================================================================
+# CHANGED: accepts a BaseLattice; derives n, edges from it
+def _build_quantum_structures(lattice: BaseLattice,
+                               j1: float = J1, j2: float = J2) -> dict:
+    n          = lattice.n_sites
+    nn_edges   = lattice.nn_edges
+    nnn_edges  = lattice.nnn_edges
+    n_up       = get_n_up(n)
+
+    H_sp, basis, bindex = build_hamiltonian(n, n_up, nn_edges, nnn_edges,
+                                             j1=j1, j2=j2)
+    evals, evecs = eigsh(H_sp, k=1, which='SA')
+    e_exact      = float(evals[0])
+    psi_exact_np = evecs[:, 0] / np.linalg.norm(evecs[:, 0])
+    del H_sp, evals, evecs
+
+    h_rows, h_cols, h_vals = build_jax_hamiltonian(n, n_up, nn_edges, nnn_edges,
+                                                    j1=j1, j2=j2)
+    apply_H = make_apply_H(h_rows, h_cols, h_vals, len(basis))
+    del h_rows, h_cols, h_vals
+
+    srcs_flat_gpu, dsts_flat_gpu, row_ptr_np = build_givens_pairs(
+        n, list(basis), bindex)
+
+    pair_i_np, pair_j_np, basis_bits_gpu = build_jastrow_indices(n, basis)
+    jastrow_phase_fn = _make_jastrow_phase_fn(pair_i_np, pair_j_np, basis_bits_gpu)
+
+    psi_neel      = neel_state(n, n_up, list(basis), bindex)
+    psi_exact_gpu = _to_device(jnp.array(psi_exact_np, dtype=jnp.complex128))
+
+    return dict(
+        n=n, n_up=n_up, nn_edges=nn_edges, nnn_edges=nnn_edges,
+        basis=basis, bindex=bindex,
+        e_exact=e_exact, psi_exact_np=psi_exact_np, psi_exact_gpu=psi_exact_gpu,
+        apply_H=apply_H,
+        srcs_flat_gpu=srcs_flat_gpu, dsts_flat_gpu=dsts_flat_gpu,
+        row_ptr_np=row_ptr_np, jastrow_phase_fn=jastrow_phase_fn,
+        psi_neel=psi_neel,
+    )
+
+
+# =============================================================================
+# SUMMARY PRINTER
+# =============================================================================
+def _print_summary(n, e_exact, results, variants,
+                   lattice_name: str = "", j1: float = J1, j2: float = J2):
+    col  = 14
+    W    = max(80, 28 + col * len(variants) + 2)
+    rfmt = f"  {{:<28}}" + f"{{:>{col}}}" * len(variants)
+    print(f"\n{'='*W}")
+    print(f"  SUMMARY  {lattice_name}  N={n}  J1={j1}  J2={j2}  "
+          f"E_exact={e_exact:.6f}  JAX={_JAX_DEVICE}")
+    print(f"{'='*W}")
+    print(rfmt.format("metric", *[f"{v}-uCJ" for v in variants]))
+    print("  " + "─" * (28 + col * len(variants)))
+
+    def _row(label, vals):
+        print(rfmt.format(label[:28],
+                          *[f"{vals.get(v, float('nan')):.6f}" for v in variants]))
+
+    print(rfmt.format("E_exact", *[f"{e_exact:.6f}"] * len(variants)))
+    _row("E_theory (JAX)",   {v: results[v]['jax_best']['E']     for v in variants})
+    _row("E_pl (noiseless)", {v: results[v]['E_pl']              for v in variants})
+    _row("overlap",          {v: results[v]['overlap']['overlap'] for v in variants})
+    _row("‖Re(ρ)‖_F @ conv",  {v: results[v]['rdm_conv']['re_frob'] for v in variants})
+    _row("‖Im(ρ)‖_F @ conv",  {v: results[v]['rdm_conv']['im_frob'] for v in variants})
+    _row("Im/Re ratio @ conv", {v: results[v]['rdm_conv']['ratio']   for v in variants})
+    print(f"{'='*W}\n")
+
+
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+# CHANGED: accepts lattice: BaseLattice instead of n + implicit 1D chain
+def run(lattice: BaseLattice,
+        variants=VARIANTS, k_max: int = K_MAX,
+        e_tol: float = E_TOL, timer: Timer | None = None,
+        j1: float = J1, j2: float = J2):
+
+    n = lattice.n_sites
+    W = 70
+    print("\n" + "=" * W)
+    print(f"  run  |  lattice={lattice.name}  N={n}  J1={j1}  J2={j2}  "
+          f"variants={variants}  JAX={_JAX_DEVICE}")
+    print(f"       |  PL_backend={_BACKEND_PREF}")
+    print("=" * W)
+
+    qs = _build_quantum_structures(lattice, j1=j1, j2=j2)
+    n                = qs['n']
+    nn_edges         = qs['nn_edges']
+    nnn_edges        = qs['nnn_edges']
+    e_exact          = qs['e_exact']
+    psi_exact_np     = qs['psi_exact_np']
+    psi_exact_gpu    = qs['psi_exact_gpu']
+    apply_H          = qs['apply_H']
+    srcs_flat_gpu    = qs['srcs_flat_gpu']
+    dsts_flat_gpu    = qs['dsts_flat_gpu']
+    row_ptr_np       = qs['row_ptr_np']
+    jastrow_phase_fn = qs['jastrow_phase_fn']
+    psi_neel         = qs['psi_neel']
+    basis            = qs['basis']
+    bindex           = qs['bindex']
+    n_up             = qs['n_up']
+
+    print(f"\n[Lanczos]  {lattice.name}  N={n}  J1={j1}  J2={j2}  "
+          f"E_exact={e_exact:.8f}  E/site={e_exact/n:.8f}")
+
+    total_sz = (n_up - (n - n_up)) / 2.0
+    nk_hamiltonian, _ = build_netket_hamiltonian(
+        n, nn_edges, nnn_edges, j1=j1, j2=j2, total_sz=total_sz)
+    vs_rbm, _ = run_netket_vmc(n, e_exact, total_sz=total_sz,
+                                hamiltonian=nk_hamiltonian)
+    C_jastrow, rho_real, rho_imag = extract_ucj_correlators(
+        vs_rbm, n, basis, bindex)
+
+    print_init_signal(C_jastrow, rho_real, rho_imag)
+
+    results = {}
+    for variant in variants:
+        print(f"\n{'─'*W}")
+        print(f"  JAX L-BFGS  |  {variant}-uCJ  {lattice.name}  N={n}  J1={j1}  J2={j2}")
+        print(f"{'─'*W}")
+
+        tracker = DiagnosticTracker(
+            e_exact=e_exact, n=n, variant=variant, e_tol=e_tol)
+        tracker.analyse_init(C_jastrow, rho_real, rho_imag)
+
+        label = f"jax_lbfgs {variant} {lattice.name} J2={j2}"
+        if timer: timer.start(label)
+        jax_best = adaptive_ucj(
+            variant, n, k_max, e_tol, C_jastrow, e_exact,
+            psi_neel, psi_exact_gpu,
+            srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+            jastrow_phase_fn, apply_H,
+            tracker=tracker,
+            K_real=rho_real, K_imag=rho_imag)
+        if timer: timer.stop(label)
+
+        tracker.report()
+
+        params = np.array(jax_best['params'])
+
+        label = f"pl_eval {variant} {lattice.name} J2={j2}"
+        if timer: timer.start(label)
+        E_pl = energy_noiseless_pl(n, jax_best['k'], variant, params,
+                                   nn_edges, nnn_edges, j1, j2)
+        if timer: timer.stop(label)
+
+        print(f"\n[{variant}-uCJ]  E_theory={jax_best['E']:.8f}"
+              f"  E_pl={E_pl:.8f}  k_opt={jax_best['k']}")
+
+        circuit_info_pl(n, jax_best['k'], variant, params)
+
+        ov = state_overlap_pl(
+            params, variant, jax_best['k'],
+            psi_neel, psi_exact_np,
+            srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+            jastrow_phase_fn, n)
+        ov['E_pl'] = E_pl  # attach for summary table
+
+        rdm_conv = rdm_norms_at_convergence(
+            params, variant, jax_best['k'],
+            psi_neel, srcs_flat_gpu, dsts_flat_gpu, row_ptr_np,
+            jastrow_phase_fn, n, basis, bindex)
+
+        results[variant] = dict(jax_best=jax_best, params=params,
+                                E_pl=E_pl, overlap=ov,
+                                rdm_conv=rdm_conv, tracker=tracker)
+
+    _print_summary(n, e_exact, results, variants,
+                   lattice_name=lattice.name, j1=j1, j2=j2)
+    write_summary_file(lat, j1, j2, e_exact, results, variants)
+    return results
+
+# =============================================================================
+# SUMMARY FILE WRITER
+# =============================================================================
+import json
+import pathlib
+
+def write_summary_file(
+    lat: "BaseLattice",
+    j1: float,
+    j2: float,
+    e_exact: float,
+    results: dict,
+    variants: list[str],
+    out_dir: str = "summaries",
+) -> pathlib.Path:
+    """
+    Write a per-(lattice, J2) summary file covering:
+      - Best warm-start energy & fidelity  }  for each variant
+      - Best cold-start energy & fidelity  }  (re / im / g)
+      - Converged Frobenius norms (Re, Im, ratio) from the best preparation
+
+    Parameters
+    ----------
+    lat      : BaseLattice
+    j1, j2   : Heisenberg couplings used in the run
+    e_exact  : Lanczos ground-state energy
+    results  : dict returned by run()  {variant -> {...}}
+    variants : list of variant strings, e.g. ['re', 'im', 'g']
+    out_dir  : directory to write files into (created if absent)
+
+    Returns
+    -------
+    pathlib.Path  –  path to the written file
+    """
+    out_path = pathlib.Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    # Sanitise lattice name and j2 for use in a filename
+    lat_tag = lat.name.replace(" ", "_").replace("/", "-")
+    j2_tag  = f"{j2:.3f}".replace(".", "p")
+    fname   = out_path / f"{lat_tag}_J2_{j2_tag}.txt"
+
+    W    = 80
+    sep  = "=" * W
+    thin = "-" * W
+
+    def _best_by_kind(tracker, kind: str):
+        """Return the RestartRecord with the lowest E_final among restarts of `kind`."""
+        candidates = [
+            r
+            for lr in tracker.layers
+            for r in lr.restarts
+            if r.kind == kind
+        ]
+        return min(candidates, key=lambda r: r.E_final) if candidates else None
+
+    lines = []
+    lines.append(sep)
+    lines.append(f"  UCJ WARM-START SUMMARY")
+    lines.append(f"  Lattice : {lat.name}   N={lat.n_sites}")
+    lines.append(f"  J1={j1:.4f}   J2={j2:.4f}")
+    lines.append(f"  E_exact = {e_exact:.10f}   E/site = {e_exact / lat.n_sites:.10f}")
+    lines.append(sep)
+
+    for variant in variants:
+        if variant not in results:
+            continue
+
+        res      = results[variant]
+        tracker  = res["tracker"]
+        rdm_conv = res["rdm_conv"]
+        jax_best = res["jax_best"]
+        overlap  = res["overlap"]["overlap"]
+
+        # ── warm / cold best records ──────────────────────────────────────
+        warm_rec = _best_by_kind(tracker, "warm")
+        # cold restarts may be labelled "cold" (from _cold_baseline)
+        cold_rec = _best_by_kind(tracker, "cold")
+
+        lines.append("")
+        lines.append(f"  VARIANT : {variant}-uCJ   k_opt={jax_best['k']}")
+        lines.append(thin)
+
+        # -- warm start --
+        lines.append("  [ WARM START – best across all layers / restarts ]")
+        if warm_rec is not None:
+            dE_warm = abs(warm_rec.E_final - e_exact)
+            lines.append(f"    E_final   = {warm_rec.E_final:.10f}")
+            lines.append(f"    |ΔE|      = {dE_warm:.6e}")
+            lines.append(f"    fidelity  = {warm_rec.fidelity:.8f}")
+            lines.append(f"    nit / nfev= {warm_rec.nit} / {warm_rec.nfev}")
+            lines.append(f"    wall_sec  = {warm_rec.wall_sec:.2f} s")
+            lines.append(f"    converged = {warm_rec.converged}")
+        else:
+            lines.append("    (no warm-start restarts recorded)")
+
+        lines.append("")
+
+        # -- cold start --
+        lines.append("  [ COLD START – best across all layers / restarts ]")
+        if cold_rec is not None:
+            dE_cold = abs(cold_rec.E_final - e_exact)
+            lines.append(f"    E_final   = {cold_rec.E_final:.10f}")
+            lines.append(f"    |ΔE|      = {dE_cold:.6e}")
+            lines.append(f"    fidelity  = {cold_rec.fidelity:.8f}")
+            lines.append(f"    nit / nfev= {cold_rec.nit} / {cold_rec.nfev}")
+            lines.append(f"    wall_sec  = {cold_rec.wall_sec:.2f} s")
+            lines.append(f"    converged = {cold_rec.converged}")
+        else:
+            lines.append("    (no cold-start restarts recorded – set N_COLD_RESTARTS > 0)")
+
+        # warm vs cold delta (if both present)
+        if warm_rec is not None and cold_rec is not None:
+            lines.append("")
+            dE_w = abs(warm_rec.E_final - e_exact)
+            dE_c = abs(cold_rec.E_final - e_exact)
+            winner = "warm" if dE_w < dE_c else "cold"
+            iter_save = cold_rec.nit - warm_rec.nit
+            lines.append("  [ WARM vs COLD ]")
+            lines.append(f"    lower |ΔE|   : {winner}")
+            lines.append(f"    Δ|ΔE|        : {abs(dE_w - dE_c):.6e}")
+            lines.append(f"    iter saving  : {iter_save:+d}  "
+                         f"(warm={warm_rec.nit}, cold={cold_rec.nit})")
+            fid_winner = "warm" if warm_rec.fidelity > cold_rec.fidelity else "cold"
+            lines.append(f"    higher fid   : {fid_winner}  "
+                         f"({warm_rec.fidelity:.6f} vs {cold_rec.fidelity:.6f})")
+
+        lines.append("")
+
+        # -- frobenius norms at convergence (best preparation) --
+        lines.append("  [ FROBENIUS NORMS @ CONVERGENCE  (best preparation) ]")
+        lines.append(f"    ‖Re(ρ_ij)‖_F = {rdm_conv['re_frob']:.8f}")
+        lines.append(f"    ‖Im(ρ_ij)‖_F = {rdm_conv['im_frob']:.8f}")
+        lines.append(f"    Im / Re ratio = {rdm_conv['ratio']:.8f}")
+        lines.append("")
+
+        # -- overall best (JAX optimiser, may be layer_append rather than warm) --
+        lines.append("  [ OVERALL BEST (JAX L-BFGS) ]")
+        lines.append(f"    E_best      = {jax_best['E']:.10f}")
+        lines.append(f"    |ΔE|        = {abs(jax_best['E'] - e_exact):.6e}")
+        lines.append(f"    fidelity    = {jax_best['fid']:.8f}")
+        lines.append(f"    overlap     = {overlap:.8f}")
+        lines.append(f"    E_pl        = {res['E_pl']:.10f}")
+        lines.append(thin)
+
+    lines.append("")
+    lines.append(sep)
+    lines.append(f"  END OF SUMMARY  –  {lat.name}  J2={j2:.4f}")
+    lines.append(sep)
+
+    text = "\n".join(lines) + "\n"
+    fname.write_text(text, encoding="utf-8")
+    print(f"[summary]  written → {fname}")
+
+    # Also dump a machine-readable JSON sidecar
+    json_data = {
+        "lattice": lat.name,
+        "n_sites": lat.n_sites,
+        "j1": j1,
+        "j2": j2,
+        "e_exact": e_exact,
+        "variants": {},
+    }
+    for variant in variants:
+        if variant not in results:
+            continue
+        res      = results[variant]
+        tracker  = res["tracker"]
+        rdm_conv = res["rdm_conv"]
+        jax_best = res["jax_best"]
+        warm_rec = _best_by_kind(tracker, "warm")
+        cold_rec = _best_by_kind(tracker, "cold")
+
+        def _rec_to_dict(r):
+            if r is None:
+                return None
+            return {
+                "E_final":  r.E_final,
+                "abs_dE":   abs(r.E_final - e_exact),
+                "fidelity": r.fidelity,
+                "nit":      r.nit,
+                "nfev":     r.nfev,
+                "wall_sec": r.wall_sec,
+                "converged": r.converged,
+            }
+
+        json_data["variants"][variant] = {
+            "k_opt":      jax_best["k"],
+            "warm_best":  _rec_to_dict(warm_rec),
+            "cold_best":  _rec_to_dict(cold_rec),
+            "rdm_conv": {
+                "re_frob": rdm_conv["re_frob"],
+                "im_frob": rdm_conv["im_frob"],
+                "ratio":   rdm_conv["ratio"],
+            },
+            "jax_overall": {
+                "E":       jax_best["E"],
+                "abs_dE":  abs(jax_best["E"] - e_exact),
+                "fidelity": jax_best["fid"],
+                "overlap":  res["overlap"]["overlap"],
+                "E_pl":     res["E_pl"],
+            },
+        }
+
+    json_fname = fname.with_suffix(".json")
+    json_fname.write_text(json.dumps(json_data, indent=2), encoding="utf-8")
+    print(f"[summary]  JSON  → {json_fname}")
+
+    return fname
+# =============================================================================
+# ENTRY
+# =============================================================================
+
+
+
+
+if __name__ == '__main__':
+    J2_list = [0.0]
+
+    for j2 in J2_list:
+        
+        timer = Timer()
+
+        # ── 1D chain sweep (reproduces original behaviour) ─────────────────────
+        run(make_lattice('chain', L=12), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+
+        # ── 2D lattice examples ─────────────────────────────────────────────────
+        # Square 4×4
+        run(make_lattice('square', L=16), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+
+        # Triangular 3×4
+        run(make_lattice('triangular', L=12), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+
+        # Honeycomb 2×2 unit cells = 8 sites
+        run(make_lattice('honeycomb', L=8), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+
+        # Kagome 2×2 unit cells = 12 sites
+        run(make_lattice('kagome', L=12), variants=['re', 'im', 'g'], j1=1.0, j2=j2, timer=timer)
+
+        timer.summary("Multi-lattice sweep")
