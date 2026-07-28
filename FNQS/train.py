@@ -56,15 +56,6 @@ def make_hamiltonian(j2, j1=J1):
     """Nearest + next-nearest neighbour Heisenberg chain for a given J2."""
     return nk.operator.Heisenberg(hilbert=hi, graph=graph, J=[j1, j2])
 
-def make_matvec(vs):
-    """v -> S_k @ v, matrix-free (no n_params^2 matrix ever formed)."""
-    Sk_op = nk.optimizer.qgt.QGTJacobianPyTree(vs, diag_shift=0.0)
-    def mv(v_flat, unravel):
-        v_tree = unravel(v_flat)
-        out_tree = Sk_op @ v_tree
-        out_flat, _ = jax.flatten_util.ravel_pytree(out_tree)
-        return out_flat
-    return mv
 # --------------------------------------------------------------------------
 # 2. FNQS ansatz: a translation-invariant, PATCH-based self-attention network
 #    conditioned on the coupling j2, following the paper's actual
@@ -293,12 +284,6 @@ vstates = [
 optimizer = optax.sgd(LR)
 opt_state = optimizer.init(variables["params"])
 import jax.flatten_util
-
-
-def qgt_dense(vs):
-    """Real quantum geometric tensor S(gamma_k) restricted to `params`,
-    as a dense array (Eq. 17)."""
-    return nk.optimizer.qgt.QGTJacobianDense(vs, diag_shift=0.0).to_dense()
 
 
 def bin_by_tercile(j2_batch, energies, j2_low, j2_high):
