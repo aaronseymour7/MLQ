@@ -1,32 +1,4 @@
-"""
-Minimal NetKet training script: FNQS (Vision-Transformer neural quantum state,
-following Rende et al., Nat. Commun. 16, 7213 (2025)) for the 1D J1-J2
-Heisenberg chain, N = 20 sites, trained with the *ensemble* Stochastic
-Reconfiguration (SR) of Eqs. (15)-(18) of the paper so that a single set of
-weights generalizes across a whole range of J2, not just one value.
 
-Idea: the network wavefunction psi_theta(sigma | j2) takes the coupling j2
-as an extra input. At every SR step we draw R couplings {j2_k} ~ P(j2),
-build the corresponding Hamiltonians, sample each of them independently,
-and combine the R gradients/QGTs into the ensemble-averaged G and S of
-Eqs. (16)-(17) before doing one regularized SR update (Eq. 18). This lets
-the trained model be evaluated (and extrapolated) at any j2 in supp(P),
-including values never explicitly seen.
-
-Changes vs the first version (for the R=4 -> R=9 regression):
-  - DIAG_SHIFT is now annealed (starts higher, decays over training) instead
-    of fixed. A fixed small shift became under-regularized once R changed the
-    conditioning of the ensemble-averaged S, causing single-step blowups
-    (visible in the old log as isolated positive-energy iterations).
-  - The SR update is norm-clipped before being applied, so a single bad
-    S_reg solve can no longer permanently corrupt `params` for the rest of
-    training.
-  - The per-10-iter printout now also reports mean e/site *per j2 tercile*
-    (low third / mid third / high third of [J2_LOW, J2_HIGH]), using only
-    the energies already computed this iteration -- no extra sampling, no
-    mid-training tester calls. This is the diagnostic that would have shown
-    the 0.4-0.6 region collapsing well before iteration 800.
-"""
 
 import numpy as np
 import jax
@@ -45,31 +17,21 @@ print("JAX devices:", jax.devices())
 L = 20
 J1 = 1.0
 
-nn_edges = [(i, (i + 1) % L, 0) for i in range(L)]   # nearest neighbours
-nnn_edges = [(i, (i + 2) % L, 1) for i in range(L)]  # next-nearest neighbours
+nn_edges = [(i, (i + 1) % L, 0) for i in range(L)]   # nearest neighbors
+nnn_edges = [(i, (i + 2) % L, 1) for i in range(L)]  # next-nearest neighbors
 graph = nk.graph.Graph(edges=nn_edges + nnn_edges)
 
 hi = nk.hilbert.Spin(s=0.5, N=L, total_sz=0.0)
 
 
 def make_hamiltonian(j2, j1=J1):
-    """Nearest + next-nearest neighbour Heisenberg chain for a given J2."""
+    """Nearest + next-nearest neighbor Heisenberg chain for a given J2."""
     return nk.operator.Heisenberg(hilbert=hi, graph=graph, J=[j1, j2])
 
 # --------------------------------------------------------------------------
 # 2. FNQS ansatz: a translation-invariant, PATCH-based self-attention network
-#    conditioned on the coupling j2, following the paper's actual
-#    transformer_fnqs.py / attentions.py more closely than the original
-#    single-site-token version below.
-#
-#    Patching: instead of one token per site (L tokens), we group `b`
-#    consecutive sites into one token, giving L_eff = L // b tokens. For
-#    b=2 on this J1-J2 chain, each patch/token contains one J1-coupled
-#    nearest-neighbor pair (site_i, site_{i+1}), directly matching the
-#    paper's design intent of letting each token encode a local bond
-#    rather than making the attention layers rediscover local structure
-#    from scratch.
-# --------------------------------------------------------------------------
+#    conditioned on the coupling J2
+
 def log_cosh(x):
     sgn = -2 * jnp.signbit(x.real) + 1
     x = x * sgn
@@ -133,22 +95,7 @@ class EncoderBlock(nn.Module):
 
 
 class FNQS1D(nn.Module):
-    """psi_theta(sigma | j2), patch-based.
 
-    j2 is read from a non-trainable "coupling" variable collection (instead
-    of a plain positional argument, unlike the paper's HF-wrapped version)
-    so that it can be swapped between MC samplings without any change to
-    the static structure of the module (avoids jit recompilation every time
-    we move to a different system).
-
-    Capacity defaults below are a meaningful step up from the original
-    single-site version (d_model 16->48, layers 2->4, heads 4->8) to move
-    closer to the paper's parameter/site ratio, while still much smaller
-    than their N=100 TFIM model (d_model=72, layers=6, heads=12) since
-    N=20 needs far fewer parameters. Expect slower wall-clock per
-    iteration than your d_model=24 run -- check this fits your compute
-    budget before committing to a full run.
-    """
     d_model: int = 48
     heads: int = 8
     num_layers: int = 4
@@ -195,19 +142,7 @@ N_ITERS = 1400
 LR = 0.02
 J2_LOW, J2_HIGH = 0.0, 0.6   # support of P(j2) the model is trained to cover
 
-# -- j2 sampling distribution --
-# NOTE: an earlier attempt biased 60% of each batch toward [0.3, 0.6] to
-# give the hard/frustrated region more gradient signal. That caused
-# persistent training instability (huge, erratic |delta| spikes recurring
-# throughout the whole 800 iterations, energy oscillating and never
-# breaking through toward convergence) -- almost certainly because most
-# systems in each ensemble batch were now high-variance/hard-to-sample,
-# with too few easy systems left to anchor stable G/S estimates at the
-# current M_PER_SYSTEM. Reverted to plain uniform sampling, which is the
-# configuration that produced the best, cleanly-converging result so far.
-# If you want to revisit biasing later, do it much more mildly (e.g.
-# HARD_REGION_FRAC ~0.15-0.2) and/or pair it with a higher M_PER_SYSTEM
-# for the hard region specifically, rather than reintroducing it at 0.6.
+
 HARD_REGION_LOW = 0.30
 HARD_REGION_FRAC = 0.0
 
@@ -222,16 +157,7 @@ def sample_j2_batch(size):
 # -- diag-shift annealing schedule --
 # Starts high (strong regularization while the ensemble-averaged S is still
 # poorly conditioned / far from any good basin) and decays toward a floor.
-#
-# NOTE: the original floor of 1e-3 (matching the very first fixed-shift
-# script) turned out to be insufficient over long training -- raw SR update
-# norms intermittently spiked into the thousands/tens-of-thousands even
-# after annealing completed (e.g. |delta|=77915 at iter 370, =140219 at
-# iter 790 in one 1200-iter run), meaning S_reg was essentially singular at
-# those steps, not just producing a large-but-legitimate step. Raised the
-# floor so the ensemble-averaged QGT stays better-conditioned for the whole
-# run. If convergence now feels too damped/slow, lower DIAG_SHIFT_END
-# gradually (e.g. try 2e-3) rather than jumping back to 1e-3.
+
 DIAG_SHIFT_START = 1e-2
 DIAG_SHIFT_END = 3e-3
 DIAG_SHIFT_DECAY_ITERS = 400   # exponential decay reaches ~DIAG_SHIFT_END by this iter
@@ -264,11 +190,6 @@ rng = jax.random.PRNGKey(0)
 dummy_spins = hi.random_state(jax.random.PRNGKey(1), 2)
 variables = model.init(rng, dummy_spins)
 
-# Fix the numpy RNG used for j2 sampling so runs are reproducible/comparable.
-# Without this, every run (even with identical code/config) is a genuinely
-# different stochastic trajectory, which made it impossible to tell whether
-# a change actually helped or just got a luckier draw. Change the seed if
-# you want a different-but-still-reproducible trajectory.
 np.random.seed(0)
 
 sampler = nk.sampler.MetropolisExchange(hi, graph=graph, n_chains=M_PER_SYSTEM)
