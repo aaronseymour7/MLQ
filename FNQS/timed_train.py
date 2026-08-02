@@ -198,9 +198,9 @@ class FNQS1D(nn.Module):
 # --------------------------------------------------------------------------
 R = 9                        # number of couplings sampled per SR step ("systems")
 M_PER_SYSTEM = 512           # MC samples per system  ->  total M = R * M_PER_SYSTEM
-N_ITERS = 1400
+N_ITERS = 1500
 LR = 0.02
-J2_LOW, J2_HIGH = 0.0, 0.6   # support of P(j2) the model is trained to cover
+J2_LOW, J2_HIGH = 0.0, 1.0   # support of P(j2) the model is trained to cover
 
 # -- j2 sampling distribution --
 # NOTE: an earlier attempt biased 60% of each batch toward [0.3, 0.6] to
