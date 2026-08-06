@@ -1,0 +1,32 @@
+JAX devices: [CudaDevice(id=0)]
+Loaded trained weights from fnqs_variables.pkl (trained in 10192.1s)
+j2=-0.1500 [EXTRAP]  nqs=-1.858799+-0.001112  rel_var=1.47e-03
+j2=-0.0010 [EXTRAP]  nqs=-1.770019+-0.000415  rel_var=2.25e-04
+j2=+0.0000 [interp]  nqs=-1.768964+-0.000400  rel_var=2.09e-04
+j2=+0.1250 [interp]  nqs=-1.682087+-0.000228  rel_var=7.50e-05
+j2=+0.2500 [interp]  nqs=-1.598513+-0.000277  rel_var=1.23e-04
+j2=+0.3750 [interp]  nqs=-1.524745+-0.000408  rel_var=2.93e-04
+j2=+0.5000 [interp]  nqs=-1.494894+-0.000436  rel_var=3.48e-04
+j2=+0.6250 [interp]  nqs=-1.533968+-0.000266  rel_var=1.23e-04
+j2=+0.7500 [interp]  nqs=-1.631609+-0.000354  rel_var=1.93e-04
+j2=+0.8750 [interp]  nqs=-1.706697+-0.001685  rel_var=3.99e-03
+j2=+1.0000 [interp]  nqs=-1.868419+-0.002345  rel_var=6.45e-03
+j2=+1.0010 [EXTRAP]  nqs=-1.867812+-0.002313  rel_var=6.28e-03
+j2=+1.1500 [EXTRAP]  nqs=-0.059967+-0.014029  rel_var=2.24e+02
+
+Saved results to fnqs_energy_scan_results.csv
+    j2  in_support     e_nqs  e_nqs_err  nqs_rel_variance
+-0.150       False -1.858799   0.001112          0.001467
+-0.001       False -1.770019   0.000415          0.000225
+ 0.000        True -1.768964   0.000400          0.000209
+ 0.125        True -1.682087   0.000228          0.000075
+ 0.250        True -1.598513   0.000277          0.000123
+ 0.375        True -1.524745   0.000408          0.000293
+ 0.500        True -1.494894   0.000436          0.000348
+ 0.625        True -1.533968   0.000266          0.000123
+ 0.750        True -1.631609   0.000354          0.000193
+ 0.875        True -1.706697   0.001685          0.003992
+ 1.000        True -1.868419   0.002345          0.006454
+ 1.001       False -1.867812   0.002313          0.006282
+ 1.150       False -0.059967   0.014029        224.187724
+matplotlib not installed -- skipping plot, CSV results still saved.
