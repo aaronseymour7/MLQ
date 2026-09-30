@@ -12,8 +12,15 @@ Conventions
   Ancilla = 0 branch applies cos(H t_i + phi_i) to the system.
 * Nothing here reads script-level globals: N comes from the circuit / operator,
   everything else is passed in.
+
+Scope
+-----
+This module is noiseless by design: every circuit is simulated as an exact
+statevector (or an exact-unitary numpy reference), with no gate error or
+shot noise. That's intentional -- the goal is to isolate and characterize
+Trotter/algorithmic error in the filter, not to predict device performance.
+Anything claiming device-level behavior needs a separate, noisy study.
 """
-from math import ceil
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -24,7 +31,6 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as sla
 from scipy import optimize as opt
 from scipy.linalg import expm
-from scipy.sparse.linalg import expm_multiply
 
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.circuit import ControlFlowOp, IfElseOp
@@ -330,14 +336,18 @@ def run_filter(N, trial_state, j1=1.0, j2=0.0, source="dmrg", method="v3",
 
 
 # ======================================================================
-# 3. Trotter error: nested-commutator bound and step planning
+# 3. Trotter error: nested-commutator bound
 # ======================================================================
 def alpha_comm(H, tight=False):
     """alpha = sum_g1 || [H_g1, sum_{g2>g1} H_g2] ||, Pauli terms in H.paulis
     order (the order LieTrotter uses). First-order error of time t with r steps
-    is <= alpha t^2 / (2 r).
-    tight=False: triangle-inequality version (safe upper bound).
-    tight=True:  exact spectral norm of each nested commutator."""
+    is bounded by alpha * t^2 / (2 * r) (operator norm, Childs et al. commutator
+    scaling; the tight version below is the grouped-commutator form, tighter
+    than the naive pairwise-sum triangle inequality).
+
+    tight=False: triangle-inequality version (cheap, safe upper bound).
+    tight=True:  exact spectral norm of each nested commutator (used
+                 throughout this module for reported bounds)."""
     P, c = H.paulis, np.abs(H.coeffs)
     n = len(P)
     if not tight:
@@ -355,19 +365,6 @@ def alpha_comm(H, tight=False):
     return a
 
 
-def trotter1_plan(H, times, eps, tight=False):
-    """Bound-based plan: fix dt from the largest pulse at error eps, reuse it
-    for every pulse (r_i = ceil(t_i / dt))."""
-    alpha = alpha_comm(H, tight)
-    t_max = float(np.max(np.abs(times)))
-    r_max = max(1, ceil(alpha * t_max ** 2 / (2 * eps)))
-    dt = t_max / r_max
-    steps = [max(1, ceil(abs(t) / dt - 1e-12)) for t in times]
-    bound_total = sum(alpha * abs(t) * dt / 2 for t in times)
-    return dict(alpha=alpha, dt=dt, r_max=r_max, steps=steps,
-                bound_total=bound_total)
-
-
 def h_tensor_z(H):
     """H (x) Z_anc, with the ancilla as the top qubit (leftmost Pauli label).
     exp(-i t H(x)Z) = e^{-iHt} on anc=0, e^{+iHt} on anc=1."""
@@ -375,39 +372,21 @@ def h_tensor_z(H):
         [("Z" + lab, c) for lab, c in zip(H.paulis.to_labels(), H.coeffs)])
 
 
-def pulse_error(t, m, HZ, HZ_sp, v0, order=1):
-    """|| Trotter(t, m steps) - exact ||  on v0 (use |+>_anc (x) trial state to
-    exercise both ancilla branches). HZ_sp = HZ.to_matrix(sparse=True), built
-    once by the caller."""
-    exact = expm_multiply(-1j * t * HZ_sp, v0)
-    qc = QuantumCircuit(HZ.num_qubits)
-    qc.append(evolution_gate(HZ, t, m, order), range(HZ.num_qubits))
-    qc = transpile(qc, basis_gates=["h", "s", "x", "cx", "rz"],
-                   optimization_level=0)
-    return np.linalg.norm(Statevector(v0).evolve(qc).data - exact)
-
-
-def empirical_dt(t_max, eps, HZ, HZ_sp, v0, order=1, m_hi=4096):
-    """Smallest m with pulse_error(t_max, m) <= eps. Returns (m, t_max / m)."""
-    err = lambda m: pulse_error(t_max, m, HZ, HZ_sp, v0, order)
-    m = 1
-    while err(m) > eps:                       # bracket
-        m *= 2
-        if m > m_hi:
-            raise RuntimeError("eps too small for m_hi")
-    lo, hi = m // 2 + 1, m                    # bisect (error ~monotone in m)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        lo, hi = (lo, mid) if err(mid) <= eps else (mid + 1, hi)
-    return hi, t_max / hi
-
-
 # ======================================================================
 # 4. Grid snapping: T = sum t_i split into n equal steps dt = T / n
 # ======================================================================
 def snap_to_grid(times, T, n):
     """Integer k_i with sum k_i = n (largest-remainder rounding); t_i = k_i dt,
-    dt = T / n."""
+    dt = T / n.
+
+    Why a single shared dt (uniform grid) rather than optimizing k_i per pulse:
+    every pulse Trotterizes the SAME Hamiltonian H, so the per-pulse first-order
+    error bound is alpha * t_i^2 / (2 k_i) with the same alpha for all i.
+    Minimizing total step count sum(k_i) subject to a fixed total error budget
+    sum_i alpha * t_i^2 / (2 k_i) <= eps is a Cauchy-Schwarz problem whose
+    solution is k_i proportional to t_i -- i.e. a single shared dt = t_i / k_i.
+    So the uniform grid used here is not just convenient, it's the cost-optimal
+    allocation for a fixed error budget when alpha is the same for every pulse."""
     times = np.asarray(times) * T / np.sum(times)       # enforce sum = T
     dt = T / n
     x = times / dt
@@ -434,7 +413,8 @@ def reopt_phases(k, dt, energies, phases0):
 
 def grid_filter(times, phases, T, n, energies):
     """Snap to n equal steps, drop pulses with k = 0, re-optimize phases.
-    Returns (k, dt, phases_new); pulse times are k * dt."""
+    Returns (k, dt, phases_new); pulse times are k * dt. See snap_to_grid for
+    why a uniform dt is the cost-optimal choice here."""
     k, dt = snap_to_grid(times, T, n)
     keep = k > 0
     k = k[keep]
@@ -527,6 +507,8 @@ def postselected_run(trial_qc, times, phases, pulse_fn, synthesize=True):
     pulse_fn(qc, sys_qubits, anc, t_i, phi_i, k) appends pulse k to qc.
     synthesize=True transpiles PauliEvolutionGate to real Trotter gates before
     simulating (otherwise Statevector would use the exact matrix).
+    Noiseless: this is exact statevector propagation with no gate/shot error,
+    by design (see module docstring).
     Returns (product of success probabilities, system statevector)."""
     N = trial_qc.num_qubits
     dim = 2 ** N
@@ -564,6 +546,8 @@ def apply_pulse_exact_np(state, Ufwd, Ubwd, phi_i, dim):
 
 def postselected_run_exact(trial_qc, times, phases, Hm):
     """Exact-unitary post-selected run in numpy. Hm: dense scaled H matrix.
+    This is the noiseless, Trotter-error-free reference used to isolate
+    Trotter error from everything else (filter design, DMRG error, etc.).
     Returns (product of success probabilities, system statevector)."""
     N = trial_qc.num_qubits
     dim = 2 ** N
@@ -617,7 +601,8 @@ def flatten_success_path(circ):
 
 def resource_costs(circuit, label="", flatten=False, verbose=True, basis=BASIS):
     """Transpile to `basis` (opt level 3) and count gates. flatten=True for the
-    rodeo circuit. Slow for large step counts: prefer cx_depth_per_step()."""
+    rodeo circuit. Slow for large step counts: prefer cx_depth_per_step() for
+    a per-step estimate, and validate that estimate against this at a few n."""
     circ = flatten_success_path(circuit) if flatten else circuit
     rc = transpile(circ, basis_gates=list(basis) + ["measure", "reset"],
                    optimization_level=3)
@@ -641,8 +626,10 @@ def resource_costs(circuit, label="", flatten=False, verbose=True, basis=BASIS):
 
 def cx_depth_per_step(H, order=1, basis=BASIS):
     """(CX count, depth) of ONE Trotter step of one pulse, transpiled once.
-    Multiply by the total step count for an estimate (ignores cancellation
-    across step boundaries)."""
+    Multiplying by the total step count gives an estimate that ignores gate
+    cancellation across step boundaries -- validate this estimate against a
+    full resource_costs() transpile at more than one n (see main.py) to see
+    whether that ignored cancellation actually matters at your scale."""
     N = H.num_qubits
     qc = QuantumCircuit(N + 1)
     apply_filter_pulse(qc, list(range(N)), N, H, 1.0, 0.0,
@@ -655,7 +642,10 @@ def cx_depth_per_step(H, order=1, basis=BASIS):
 # 8. Convention check (run before trusting the circuit)
 # ======================================================================
 def verify_pulse_convention():
-    """Single-pulse circuit vs FilterBuilder.apply_filter on a 2-level toy."""
+    """Single-pulse circuit vs FilterBuilder.apply_filter on a 2-level toy.
+    Returns True/False; callers should treat False as fatal -- every fidelity
+    and success-probability number downstream depends on this convention
+    (which branch is "success", sign of phi) being right."""
     energies = np.array([0.0, 1.0])
     H = SparsePauliOp.from_list([("I", 0.5), ("Z", -0.5)])   # eigvals 0, 1
     t_i, phi_i = 0.7, 0.3
@@ -671,7 +661,8 @@ def verify_pulse_convention():
     f0_quantum = np.real(sv.data[:2])            # anc = 0 block
     f0_quantum = f0_quantum / np.linalg.norm(f0_quantum)
 
+    match = bool(np.allclose(np.abs(f0_classical), np.abs(f0_quantum), atol=1e-6))
     print("classical f0:", f0_classical)
     print("quantum   f0:", f0_quantum)
-    print("match:", np.allclose(np.abs(f0_classical), np.abs(f0_quantum),
-                                atol=1e-6))
+    print("match:", match)
+    return match
