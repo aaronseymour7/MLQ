@@ -31,8 +31,7 @@ Rigorous results used (see docstrings of the functions that use them)
 (R3) trotter_bounds: post-selected state distance <= 2 eps / sqrt(p_g) with
      eps = sum_i alpha t_i^2 / (2 k_i)  (= alpha T^2/(2n) on the uniform grid).
 The Lie-Trotter commutator bound itself is the standard one from Childs et al.
-(Theory of Trotter error, 2021); I'm quoting it from memory, so please
-double-check the exact statement/ordering convention in the paper.
+(Theory of Trotter error, 2021)
 """
 from typing import Dict, List, Optional
 
