@@ -11,19 +11,19 @@ with $J_1=1$, even $N$ (so that the ground state is a non-degenerate singlet) an
 
 **Projection pulse (Stetcu–Baroni–Carlson).** One pulse acts on the system register and one ancilla initialised in $|0\rangle$:
 $$
-\mathcal W(t,\phi)=\big(\mathsf H_{\rm a}\big)\;e^{-it\,H_s\otimes Z_{\rm a}}\;\mathrm{Rz}_{\rm a}(2\phi)\;\big(\mathsf H_{\rm a}\big).
+\mathcal W(t,\phi)=\big(\mathsf H_{\mathrm{a}}\big)\;e^{-it\,H_s\otimes Z_{\mathrm{a}}}\;\mathrm{Rz}_{\mathrm{a}}(2\phi)\;\big(\mathsf H_{\mathrm{a}}\big).
 $$
 Using $\mathrm{Rz}(2\phi)=\mathrm{diag}(e^{-i\phi},e^{i\phi})$ one finds
 $$
-\langle 0_{\rm a}|\mathcal W|0_{\rm a}\rangle=\tfrac12\big(e^{-i(H_st+\phi)}+e^{+i(H_st+\phi)}\big)=\cos(H_st+\phi),
+\langle 0_{\mathrm{a}}|\mathcal W|0_{\mathrm{a}}\rangle=\tfrac12\big(e^{-i(H_st+\phi)}+e^{+i(H_st+\phi)}\big)=\cos(H_st+\phi),
 \qquad
-\langle 1_{\rm a}|\mathcal W|0_{\rm a}\rangle=-i\sin(H_st+\phi).
+\langle 1_{\mathrm{a}}|\mathcal W|0_{\mathrm{a}}\rangle=-i\sin(H_st+\phi).
 $$
 Measuring the ancilla and keeping only outcome $0$ after each of $m$ pulses (with the ancilla reset between pulses) applies, up to normalisation, the **filter**
 $$
 F(E)=\prod_{i=1}^{m}\cos(Et_i+\phi_i),\qquad T=\sum_i t_i ,
 $$
-to the trial state. The probability of the all-zeros record is $P_{\rm succ}=\sum_k|c_k|^2F(E_k)^2$ for a trial state $|\psi\rangle=\sum_kc_k|E_k\rangle$; because $F$ is a product of cosines, a failed pulse aborts the run immediately ("early abort"). We verified the sign convention (including that $\phi\to-\phi$ is rejected) directly on a random, non-commuting, field-carrying $H$ and a random complex state (`verify_pulse_convention`, error $<10^{-8}$).
+to the trial state. The probability of the all-zeros record is $P_{\mathrm{succ}}=\sum_k|c_k|^2F(E_k)^2$ for a trial state $|\psi\rangle=\sum_kc_k|E_k\rangle$; because $F$ is a product of cosines, a failed pulse aborts the run immediately ("early abort"). We verified the sign convention (including that $\phi\to-\phi$ is rejected) directly on a random, non-commuting, field-carrying $H$ and a random complex state (`verify_pulse_convention`, error $<10^{-8}$).
 
 **Relation to prior work.** The pulse is the deterministic-time, optimised-phase version of the projection/“rodeo” circuit of Stetcu, Baroni and Carlson (Phys. Rev. C 105, 064308 (2022)); with $\phi_i=0$ and random $t_i$ it reduces to the rodeo algorithm. The product-of-cosines filter is a real trigonometric polynomial in $E$ of total frequency $T$ and is therefore a restricted member of the family realised by quantum eigenvalue transformation of unitaries / QSVT (Lin–Tong, Dong–Lin–Tong), which achieve $T=O(\Delta^{-1}\log(1/\eta))$ with a single ancilla but need coherent (not measurement-based) control. The present scheme trades that for a *classically optimised* filter that can be certified and for early-abort statistics.
 
@@ -35,9 +35,9 @@ Notation: $\gamma=|\langle E_0|\psi\rangle|^2$ is the trial-state ground-state w
 
 **R2 (leakage).** If $\operatorname{spec}H_s\subset\{0\}\cup[\Delta,1]$ then for the *exact* filter
 $$
-F_{\rm exact}\;\ge\;\frac{\gamma}{\gamma+(1-\gamma)\eta^2},\qquad\text{i.e. leakage }\ \ell\le\frac{(1-\gamma)\eta^2}{\gamma+(1-\gamma)\eta^2}.
+F_{\mathrm{exact}}\;\ge\;\frac{\gamma}{\gamma+(1-\gamma)\eta^2},\qquad\text{i.e. leakage }\ \ell\le\frac{(1-\gamma)\eta^2}{\gamma+(1-\gamma)\eta^2}.
 $$
-(Proof: numerator $\gamma F(0)^2$, denominator $\le\gamma F(0)^2+(1-\gamma)\sup|F|^2$.) The design problem is therefore: given $\gamma$ and a target leakage $\varepsilon_\ell$, find $(t_i,\phi_i)$ with certified $\eta\le\eta_*=\sqrt{\gamma\varepsilon_\ell/((1-\varepsilon_\ell)(1-\gamma))}$ that maximises $F(0)^2=\prod\cos^2\phi_i$ (so $P_{\rm succ}\ge\gamma F(0)^2$) at fixed $T$ and pulse number $m$ (`floor.py`).
+(Proof: numerator $\gamma F(0)^2$, denominator $\le\gamma F(0)^2+(1-\gamma)\sup|F|^2$.) The design problem is therefore: given $\gamma$ and a target leakage $\varepsilon_\ell$, find $(t_i,\phi_i)$ with certified $\eta\le\eta_*=\sqrt{\gamma\varepsilon_\ell/((1-\varepsilon_\ell)(1-\gamma))}$ that maximises $F(0)^2=\prod\cos^2\phi_i$ (so $P_{\mathrm{succ}}\ge\gamma F(0)^2$) at fixed $T$ and pulse number $m$ (`floor.py`).
 
 **R3 (Lie–Trotter error of the post-selected state).** Replace $e^{-itH_s\otimes Z}$ by $k$ first-order Lie–Trotter steps over the Pauli terms. Because $[H_gZ,H_{g'}Z]=[H_g,H_{g'}]\otimes\mathbb 1$, the commutator constant of $H_s\otimes Z$ equals $\alpha$, and the standard bound (Childs et al., Phys. Rev. X 11, 011020, Eq. for $p=1$) gives $\|\mathcal W_i-\widetilde{\mathcal W}_i\|\le\alpha t_i^2/(2k_i)=:\epsilon_i$. The post-selected blocks $A_i=\langle0|\mathcal W_i|0\rangle$ are contractions, so telescoping gives for the un-normalised vectors $a=A_m\cdots A_1\psi$, $b=\tilde A_m\cdots\tilde A_1\psi$
 $$
@@ -54,4 +54,4 @@ Renormalisation after each pulse is irrelevant because the projections commute w
 
 Relative to R4 this removes a factor 2 in the Trotter distance and a factor $\sqrt2$ in the leakage distance. Because the required step number scales as $n\propto\epsilon_T\propto\sqrt{\varepsilon}-\sqrt{\ell}$ (first-order Trotter gives $n\propto\varepsilon^{-1/2}$ for an *infidelity* target), the proposition lowers the *guaranteed* $n$ by about a factor 2 and the guaranteed $\varepsilon$ by about 4 at fixed $n$ (quantified in §6.2).
 
-**Cost model.** One Trotter step of one pulse costs $c_{\rm step}$ CX (transpiled once); a design with $n$ steps and $m_{\rm nz}$ non-zero pulses costs $n\,c_{\rm step}+c_{\rm trial}$ CX and $n\,r_{\rm step}+m_{\rm nz}$ non-Clifford rotations; the expected cost to obtain a success is divided by $P_{\rm succ}$.
+**Cost model.** One Trotter step of one pulse costs $c_{\mathrm{step}}$ CX (transpiled once); a design with $n$ steps and $m_{\mathrm{nz}}$ non-zero pulses costs $n\,c_{\mathrm{step}}+c_{\mathrm{trial}}$ CX and $n\,r_{\mathrm{step}}+m_{\mathrm{nz}}$ non-Clifford rotations; the expected cost to obtain a success is divided by $P_{\mathrm{succ}}$.
