@@ -22,3 +22,4 @@ filter {'L': 1, 'eps': 0.003, 'gamma': 0.7170911918063505, 'trial_cx': 33, 'tria
   [warning] no feasible floor design; falling back to builder
 filter {'L': 1, 'eps': 0.001, 'gamma': 0.7170911918063505, 'trial_cx': 33, 'trial_rz': 210, 'design': 'builder', 'error': 'no guaranteed design'}
 filter {'L': 3, 'eps': 0.1, 'gamma': 0.8664102839623224, 'trial_cx': 99, 'trial_rz': 609, 'design': 'floor', 'n': 1629, 'eps_bound': np.float64(0.09994147679946278), 'cx': 125532, 'cx_filter': 125433, 'rz_nc': 165142, 'p_lb': 0.5917821303760508, 'exp_cx': 212125.36431309627, 'm': 4}
+filter {'L': 3, 'eps': 0.03, 'gamma': 0.8664102839623224, 'trial_cx': 99, 'trial_rz': 609, 'design': 'floor', 'n': 5059, 'eps_bound': np.float64(0.02840966900916628), 'cx': 389642, 'cx_filter': 389543, 'rz_nc': 511574, 'p_lb': 0.5206260916638558, 'exp_cx': 748410.4355099703, 'm': 6}
