@@ -18,35 +18,36 @@ Severity: **H** invalidates a claim or can silently produce a wrong/ruinous resu
 | 12 | L | `core/circuits.h_tensor_z` | The shift term $-E_0/W\cdot Z_{\mathrm{anc}}$ is applied as a separate non-Clifford $R_z$ in every Trotter step; it commutes with everything and can be folded into $\phi_i$ ($\phi_i\to\phi_i-E_0t_i/W$), saving one of 47 non-Clifford rotations per step ($N=6$). | Fold into the phase. |
 | 13 | L | `pipeline.build_ctx` | $\gamma$ is clipped with `min(·,1)` but the $\gamma=1$ branch is never propagated (see 1); the ED-vs-DMRG $\gamma$ fallback is labelled but not carried into reports. | Carry `gamma_src` into every exported number. |
 
-### 6.1 Methodological improvements that follow from the analysis
+**Status after this evaluation.** Items 1, 3 and 4 are fixed in the repository (explicit no-filter design when $1-\gamma<10^{-9}$, handled by `runner`, `export_circuits` and `study.py`; `ORDER\neq1` raises; dense spectrum check only for $N\le12$, `eigsh` otherwise). Item 5 is partly addressed: `study.py` is present and its imports now point at the refactored `core/` modules instead of the stale `builder.py`; its defaults now use *guaranteed* designs, $J_2\in\{0,0.2411,0.4\}$ and $N\le12$. Items 2, 6–13 remain open.
+
+### 6.1 Methodological improvements
 
 1. **Sharpened composition** (item 10): a free, proven 2.5–3.1× tighter bound and 2.3–3.2× fewer guaranteed steps.
 2. **Symmetry-resolved certification**: let $w_s$ be the trial weight in sector $s$ and $\Delta_s$ the gap of that sector. Then $\ell\le\sum_sw_s\,(\sup_{[\Delta_s,1]}|F|)^2/F(0)^2$ over the ground-state sector and the (small) remainder bounded with the global gap. Because bond-ordered Trotter steps are exactly SU(2)-symmetric, the sector weights are conserved by the (Trotterised) evolution, so this is rigorous given the sector weights, which are cheap to compute from the trial MPS. Potential saving up to $(\Delta_s/\Delta)^2\approx7\times$ in $n$ at $J_2=0$ (§5.6).
 3. **Subspace-restricted Trotter bounds**: replace the global $\alpha$ by commutator norms restricted to the low-energy subspace populated by the trial state (the observed state error is ≈ 300× below the bound), or use higher-order formulas with the matching commutator bound.
 4. **Tensor-network simulation of the filter.** The DMRG advantage is lost as long as every number comes from dense vectors; the controlled evolution $e^{-itH\otimes Z}$ is an MPO-friendly operation, so MPS/TEBD simulation of the Trotterised filter would allow $N\sim30$–$100$ and show the real DMRG→circuit→filter story.
 
-## 7. Conclusions and what a publishable paper still needs
+## 7. Conclusions and framing
 
-**Established.** The mathematics of the filter, leakage, Trotter and composition bounds is correct, and verified numerically in every test performed; the pipeline's reference implementation (pulse convention, MPO/Pauli agreement, circuit-vs-numpy agreement to $10^{-16}$) is consistent; DMRG supplies ground-state and excitation energies to $\sim10^{-9}$ up to $N=16$.
+**Established.** (a) The mathematics of the filter, leakage, Trotter and composition bounds is correct and held in every test; a sharpened composition is proved and verified. (b) The certified guarantee is loose by a factor $\sim10^{2}$–$10^{3}$ because the commutator constant is a worst case over the whole Hilbert space; the slack is quantified (§5.9) and grows with $N$. (c) A hybrid protocol — rigorous leakage plus a Richardson-type Trotter estimate, with no oracle — met its target in every completed case at 30–600× lower CX than the certified circuits. (d) DMRG supplies $E_0$, $E_1$, $E_{\rm top}$ and the ground state to $\sim10^{-9}$ up to $N=16$, but cannot certify the gap or $\gamma$.
 
-**Not established.** (i) A resource advantage: at $N\le12$ the guaranteed filter costs $10^{2}$–$10^{3}\times$ exact preparation and $\gg$ shallow MPS circuits, and the empirical savings come from an oracle. (ii) A DMRG-specific role in certification: the certified numbers are ED-based. (iii) Anything at $N>12$, near criticality or in the frustrated regime away from the exactly solvable MG point.
+**Negative result.** For the open $J_1$–$J_2$ chain at $N\le12$ and $J_2\in\{0,0.4\}$ the filter does not beat classical-then-quantum MPS preparation: the best baseline is cheaper than the certified filter by $10^{2}$–$10^{5}\times$ and than the hybrid protocol by 5–74×, because a bond dimension of 4–8 already prepares these states to $\lesssim10^{-2}$–$10^{-5}$ with a few hundred CX. The filter's cost is set by the physical gap ($T\propto1/\Delta$) and Trotter error, not by how entangled the state is, so its relative merit can only improve for states whose MPS preparation cost grows quickly — which none of the tested ones do.
 
-**Required for submission (in priority order).**
+**Framing.** We therefore recommend presenting this work as (i) a *methodology* for certified SBC filtering (rigorous bounds, sharpened composition, symmetry-resolved certification, and the hybrid protocol), (ii) a *verification harness* with open code, and (iii) an *honest comparison* showing that for 1D chains of this size MPS preparation suffices, with the regimes where the filter might help named explicitly. It should not claim a resource advantage.
 
-1. *Baselines.* Compare resources at equal fidelity against (a) deeper/optimised MPS circuits and sequential MPS preparation, (b) QETU/Lin–Tong filtering with the same trial state, (c) rodeo with random times. Without this the paper cannot claim usefulness.
-2. *Large-$N$ data* from a tensor-network simulation of the filter (item 4 above), with $\gamma(N,L)$ and the gap from DMRG labelled as estimates, and a stated rigorous or heuristic gap input.
-3. *Tighter guarantees*: items 10 and 2 of §6.1 at minimum, to close the 100–1000× gap to the empirical cost, and an honest empirical definition (certified $\eta<1$).
-4. *Benchmarks that stress the algorithm*: $J_2\in[0.2,0.45]$, $N\ge16$, and trial states with $\gamma\ll1$; drop $J_2=0.5$ or use it only as a sanity check.
-5. *Repository hygiene* (items 1–5 of §6), a test suite, pinned environment, and archived raw data for every table and figure.
-6. *Resource model*: Hamiltonian-aware compilation of $e^{-it\,h_b\otimes Z}$ (bond exponentials are SU(2)-symmetric), verified T-count constants, and a fault-tolerant estimate with early-abort statistics.
+**What would turn the negative result into a positive one (open work).**
 
-**Suggested framing if the above is only partially achievable:** a methods paper on *certified* SBC filtering — rigorous a-priori bounds, symmetry-resolved certification, and a verification harness — rather than a performance paper.
+1. *States that are expensive for MPS circuits:* two-dimensional or ladder lattices, critical systems at larger $N$ where $\chi$ must grow, or trial states from methods other than DMRG. These require tensor-network or other large-$N$ simulation of the filter itself; dense vectors stop at $N\approx14$.
+2. *Tighter and cheaper filtering:* subspace-restricted Trotter bounds (the observed constant is 10–40× below $\alpha$), second-order formulas with the matching commutator bound, symmetry-resolved windows (up to $\approx7\times$ in $n$ at $J_2=0$), absorbing the energy shift into the phases, and Hamiltonian-aware compilation of the controlled bond exponentials.
+3. *Rigor for large $N$:* a certified lower bound on the gap (e.g. symmetry-resolved DMRG plus a Temple/Weinstein-type bound) so that $\Delta$, $\gamma$ and $e_0$ are not assumptions.
+4. *Competing quantum methods* under the same trial state: QETU/Lin–Tong filtering and the rodeo algorithm with random times.
+5. *Completeness of the present data:* the empirical-protocol sweep for $N=10$–$12$ at $J_2=0.4$ and $N=12$ at $J_2=0$, $\varepsilon=10^{-3}$ rows marked †, and $L=3$ trial circuits; second-order Trotter; a fault-tolerant resource model with early-abort statistics; and verified references and T-count constants.
 
 ## 8. Reproducibility
 
 Code: `AARON/evaluation/experiments` (`exp1_primitives.py` building-block tests; `exp2_end_to_end.py N J2 L`; `exp3_dmrg_inputs.py`; `exp3b_baseline.py`; `exp4_gap_and_symmetry.py`; `exp5_scaling.py`; `make_figures.py`). Raw outputs: `AARON/evaluation/results/*.json`; logs: `AARON/evaluation/logs`. All experiments call `AARON/j1j2_filter` unmodified. Environment: Python 3.12, numpy 2.x, scipy 1.18, qiskit 2.5.2, quimb 1.15, `mps-to-circuit`; run with `OMP_NUM_THREADS=1` (multi-threaded BLAS made the SLSQP filter design several times slower). Floor-design settings for the scaling study were reduced for speed (`FLOOR_EPS_FRACS=[0.2,0.1,0.05]`, `FLOOR_M=[4,6]`); end-to-end runs used the defaults.
 
-**Limitations of this evaluation.** Single trial-circuit compilation per $(N,J_2,L)$ (the compiler is a local optimiser, so $\gamma$ is not unique); $J_2\neq0,0.5$ end-to-end runs and $N>10$ end-to-end runs were not completed; the $N=8$, $\varepsilon=10^{-3}$ guaranteed design was not simulated (beyond the simulation cap); the scaling fits use four sizes; the crossover estimate is an extrapolation. References were written from memory and must be checked before submission.
+**Limitations of this evaluation.** Single trial-circuit compilation per $(N,J_2,L)$ (the compiler is a local optimiser, so $\gamma$ is not unique); the §5.2 end-to-end simulations cover $J_2=0$ only (plus the trivial $J_2=0.5$); $J_2=0.4$ enters through the baseline (§5.8), looseness (§5.9) and hybrid-protocol (§5.10) experiments; the $N=8$, $\varepsilon=10^{-3}$ guaranteed design was not simulated (beyond the simulation cap); the scaling fits use four sizes; the crossover estimate is an extrapolation. References were written from memory and must be checked before submission.
 
 ## References
 
