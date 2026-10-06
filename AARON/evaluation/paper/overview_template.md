@@ -154,4 +154,104 @@ Fixed: $\gamma=1$ now means *no filter* (previously a million-CX filter was buil
 7. **Baselines** — equal-fidelity comparison; MPS preparation wins for $N\le12$.
 8. **Takeaways & next steps** — methodology + harness; where an advantage might exist (large $\chi$, 2D, large $N$ with tensor-network simulation of the filter); certified gap bound for large $N$.
 
-*Numbers in §4.2–4.4 are regenerated from the raw result files; rerun `paper/build_paper.py` after new experiments.*
+*Derivations of every formula above are in the appendix (§7). Numbers in §4.2–4.4 are regenerated from the raw result files; rerun `paper/build_paper.py` after new experiments.*
+
+# 7. Appendix: derivations of the filter, leakage and error formulas
+
+Notation: trial state $|\psi\rangle=\sum_kc_k|E_k\rangle$ with $\gamma=|c_0|^2$; scaled spectrum $\{0\}\cup[\Delta,1]$; $F(E)=\prod_{i=1}^m\cos(Et_i+\phi_i)$; $F_0=|F(0)|$; $L=\sum_i|t_i|$. Code locations: `core/filter_design.py` (A.2), `core/trotter.py` (A.3–A.4), `floor.py` (the $\eta_*$ target).
+
+## A.1 The filter and the success probability
+
+$\mathrm{Rz}(2\phi)=\mathrm{diag}(e^{-i\phi},e^{i\phi})$. Starting from $|0\rangle_{\rm a}|\psi\rangle$: the first $\mathsf H$ gives $\tfrac1{\sqrt2}(|0\rangle+|1\rangle)|\psi\rangle$; $\mathrm{Rz}(2\phi)$ multiplies the branches by $e^{\mp i\phi}$; $e^{-itH_s\otimes Z}$ multiplies them by $e^{\mp itH_s}$; the final $\mathsf H$ projects onto $|0\rangle$ with amplitude
+
+$$\tfrac12\big(e^{-i(H_st+\phi)}+e^{+i(H_st+\phi)}\big)=\cos(H_st+\phi),$$
+
+and onto $|1\rangle$ with $-i\sin(H_st+\phi)$. Keeping outcome 0 after each of the $m$ pulses (renormalising or not gives the same final direction, since projections commute with rescaling):
+
+$$|\varphi\rangle=\frac{\sum_kc_kF(E_k)|E_k\rangle}{\sqrt p},\qquad P_{\rm succ}=p=\sum_k|c_k|^2F(E_k)^2\ \ge\ \gamma F_0^2 .$$
+
+## A.2 Leakage (R2) and its certificate (R1)
+
+*Leakage* $\ell$ is the infidelity of the ideal (exact-evolution) filtered state with the ground state. With $y=\sum_{k\ge1}|c_k|^2F(E_k)^2$,
+
+$$1-F_{\rm exact}=\frac{y}{\gamma F_0^2+y}.$$
+
+By definition of $\eta=\sup_{[\Delta,1]}|F|/F_0$, $F(E_k)^2\le\eta^2F_0^2$ for $k\ge1$, hence $y\le(1-\gamma)\eta^2F_0^2$. The right-hand side above is increasing in $y$, so substituting the upper bound gives
+
+$$\boxed{\;\ell\ \le\ \frac{(1-\gamma)\eta^2}{\gamma+(1-\gamma)\eta^2},\qquad F_{\rm exact}\ge\frac{\gamma}{\gamma+(1-\gamma)\eta^2}\;}$$
+
+**Design target.** For a leakage budget $\varepsilon_\ell$ set $\ell=\varepsilon_\ell$: $(1-\gamma)\eta^2(1-\varepsilon_\ell)=\varepsilon_\ell\gamma$, i.e.
+
+$$\eta_*^2=\frac{\gamma\,\varepsilon_\ell}{(1-\varepsilon_\ell)(1-\gamma)} .$$
+
+`floor.py` maximises $F_0^2=\prod\cos^2\phi_i$ subject to *certified* $\eta\le\eta_*$.
+
+**Certifying $\eta$ (R1).** $|\cos|\le1$ and $|\tfrac{d}{dE}\cos(Et_i+\phi_i)|=|t_i\sin(\cdot)|\le|t_i|$ give $|F'|\le L$; differentiating once more (every term is a product of at most two $t$-factors) gives $|F''|\le L^2$. On an interval of half-width $d$ centred at $E_c$, Taylor's theorem with the remainder bounded by $\sup|F''|$ gives
+
+$$|F(E)|\le|F(E_c)|+|F'(E_c)|\,d+\tfrac12L^2d^2 .$$
+
+Bisecting $[\Delta,1]$, pruning intervals whose envelope falls below the running maximum (times $1+r_{\rm tol}$), and keeping the largest pruned envelope yields a rigorous upper bound on $\sup|F|$ (a cheaper variant uses the grid maximum plus $Lh/2$). If the true ground energy lies $e_0$ below the shift, $|F(-e_0)|\ge F_0-Le_0$, which lowers the denominator of $\eta$.
+
+## A.3 Trotter error (R3)
+
+**Lemma (two terms).** For Hermitian $A,B$, $U=e^{-i\delta(A+B)}$, $V=e^{-i\delta A}e^{-i\delta B}$:
+
+$$U-V=-i\int_0^\delta U(\delta-s)\big(e^{-isA}Be^{isA}-B\big)V(s)\,ds$$
+
+(Duhamel). Since $\|e^{-isA}Be^{isA}-B\|\le s\|[A,B]\|$ and $U,V$ are unitary, $\|U-V\|\le\tfrac{\delta^2}{2}\|[A,B]\|$.
+
+**Many terms.** Writing $H=\sum_gH_g$ and applying the lemma inductively (peel off $H_1$ against $\sum_{g>1}H_g$, then recurse) gives
+$\big\|e^{-i\delta H}-\prod_ge^{-i\delta H_g}\big\|\le\tfrac{\delta^2}{2}\alpha$, with
+$$\alpha=\sum_g\Big\|\Big[H_g,\sum_{g'>g}H_{g'}\Big]\Big\|$$
+(the first-order case of Childs, Su, Tran, Wiebe, Zhu). With $\delta=t/k$ and $k$ repetitions, telescoping $\|X^k-Y^k\|\le k\|X-Y\|$ gives $\alpha t^2/(2k)$. The ordering of the terms matters, so the code takes $\max$ over the forward and reversed orders.
+
+**Ancilla.** $[H_gZ,H_{g'}Z]=[H_g,H_{g'}]\otimes Z^2=[H_g,H_{g'}]\otimes\mathbb 1$, so $H_s\otimes Z$ has the same $\alpha$ and
+$$\|\mathcal W_i-\widetilde{\mathcal W}_i\|\le\epsilon_i:=\frac{\alpha t_i^2}{2k_i}.$$
+
+**Across pulses.** The post-selected blocks $A_i=\langle0|\mathcal W_i|0\rangle$ are contractions with $\|A_i-\tilde A_i\|\le\|\mathcal W_i-\widetilde{\mathcal W}_i\|$. For $a=A_m\cdots A_1\psi$ and $b=\tilde A_m\cdots\tilde A_1\psi$,
+
+$$a-b=\sum_{i=1}^m(A_m\cdots A_{i+1})(A_i-\tilde A_i)(\tilde A_{i-1}\cdots\tilde A_1\psi)\ \Rightarrow\ \|a-b\|\le\sum_i\epsilon_i=:\epsilon_T .$$
+
+On the uniform grid $t_i=k_i\,dt$, $\sum_ik_i=n$, $dt=T/n$:
+$$\epsilon_T=\alpha\,dt\sum_i\frac{t_i}{2}=\frac{\alpha T^2}{2n}.$$
+
+**Normalisation.** $\|a\|\sin\angle(a,b)=\mathrm{dist}(a,\mathrm{span}\,b)\le\|a-b\|$, and $\|a\|^2=p\ge p_g:=\gamma(F_0-Le_0)^2$, so
+
+$$\sin\angle(a,b)\le\frac{\epsilon_T}{\sqrt{p_g}}\quad(\text{valid when }\epsilon_T<\sqrt{p_g}).$$
+
+(The original code used the weaker Euclidean bound $\|a/|a|-b/|b|\|\le2\epsilon_T/\sqrt{p_g}$.)
+
+## A.4 Composition into a bound on $1-F$
+
+For the final normalised Trotterised state $\tilde\varphi$, the ideal filtered state $\varphi$ and the ground state $g$, use the Fubini–Study angle $\theta(x,y)=\arccos|\langle x|y\rangle|$, which is a metric on rays:
+
+- leakage: $\sin^2\theta(\varphi,g)=\ell'\le\ell$ (A.2);
+- Trotter: $\theta(\tilde\varphi,\varphi)\le\arcsin(\epsilon_T/\sqrt{p_g})$ (A.3);
+- triangle inequality: $\theta(\tilde\varphi,g)\le\theta(\tilde\varphi,\varphi)+\theta(\varphi,g)$;
+- $1-F=\sin^2\theta(\tilde\varphi,g)$ and $\sin$ is increasing on $[0,\pi/2]$.
+
+$$\boxed{\;1-F\ \le\ \sin^2\!\Big(\arcsin\sqrt{\ell}+\arcsin\frac{\epsilon_T}{\sqrt{p_g}}\Big)\ \le\ \Big(\sqrt\ell+\frac{\epsilon_T}{\sqrt{p_g}}\Big)^2\;}$$
+
+*Original code bound:* with Euclidean (phase-optimised) distances, $1-\sqrt{1-\ell}\le\ell$ gives $\mathrm{dist}(\varphi,g)\le\sqrt{2\ell}$, so $\mathrm{dist}(\tilde\varphi,g)\le\sqrt{2\ell}+d_T$ with $d_T=2\epsilon_T/\sqrt{p_g}$, and $1-F\le2(1-|\langle g|\tilde\varphi\rangle|)=\mathrm{dist}^2\le(\sqrt{2\ell}+d_T)^2$. Both are valid; the angle form is about 3× tighter (checked on $5\times10^4$ random vector triples and every simulated design: 0 violations).
+
+**Required step count.** Requiring $1-F\le\varepsilon$ in the angle form: $\epsilon_T\le\sqrt{p_g}\,\sin(\arcsin\sqrt\varepsilon-\arcsin\sqrt\ell)$, so with $\epsilon_T=\alpha T^2/2n$
+
+$$n\ \ge\ \frac{\alpha T^2}{2\sqrt{p_g}\,\sin(\arcsin\sqrt\varepsilon-\arcsin\sqrt\ell)}\ \approx\ \frac{\alpha T^2}{2\sqrt{p_g}\,(\sqrt\varepsilon-\sqrt\ell)} .$$
+
+(Original form: $n=\alpha T^2/(\sqrt{p_g}\,d_T)$ with $d_T=\sqrt\varepsilon-\sqrt{2\ell}$.) First-order Trotter therefore needs $n\propto\varepsilon^{-1/2}$ for an infidelity target, and $n\propto\alpha T^2$, i.e. $\propto N\cdot\Delta^{-2}$ in physical units.
+
+## A.5 The hybrid protocol (a heuristic built on A.2 and A.4, not a theorem)
+
+Assume the first-order error vector behaves as $e_n=\psi_n-\psi_\infty\approx c/n$. Then $\psi_n-\psi_{2n}\approx e_n/2$, so $\|\psi_n-\psi_\infty\|\approx2\|\psi_n-\psi_{2n}\|$. For small distances $1-|\langle\psi_n|\psi_{2n}\rangle|^2\approx\|\psi_n-\psi_{2n}\|^2$, i.e. $\delta_n\approx\|\psi_n-\psi_{2n}\|^2$, so the Trotter angle is $\approx2\sqrt{\delta_n}$. Inserting it for $\arcsin(\epsilon_T/\sqrt{p_g})$ in A.4, with the certified leakage $\ell(n)$ of the *snapped* design, gives the acceptance rule
+
+$$\big(\sqrt{\ell(n)}+2\sqrt{\delta_n}\big)^2\le\varepsilon\quad\text{and certified }\eta<1 .$$
+
+Leakage is rigorous; the Trotter term is only as reliable as the $1/n$ assumption. Observed margins: measured infidelity was $1.6$–$10\times$ below $\varepsilon$ in all 24 cases.
+
+## A.6 Assumptions used above
+
+1. $\mathrm{spec}(H_s)\subset\{0\}\cup[\Delta,1]$ with a non-degenerate ground state (even $N$, singlet).
+2. $\gamma$, $\Delta$ and $e_0$ known exactly (ED, $N\le12$) or *assumed* (DMRG path).
+3. First-order Lie–Trotter with preserved term order; $\alpha$ is the max over forward and reversed order. The Trotter bound does **not** cover second-order formulas.
+4. Noiseless circuits; no synthesis error in rotations.
+5. $\epsilon_T<\sqrt{p_g}$ (otherwise the Trotter angle bound is vacuous and the code falls back to 1).
