@@ -66,9 +66,12 @@ FLOOR_EPS_FRACS = [0.4, 0.2, 0.1, 0.05, 0.02, 0.01]   # leakage budget as fracti
 FLOOR_M = [4, 6, 8]
 FLOOR_KW = dict(t_max_frac=0.5)
 FLOOR_JOBS = 1
+GAMMA_EXACT_TOL = 1e-9                # 1-gamma below this: trial state already exact, no filter
+DENSE_CHECK_MAX_N = 12                # dense eigvalsh sanity check of the scaled spectrum
 
 
 def run_global_checks():
+    _require_first_order()
     if not verify_pulse_convention(verbose=VERBOSE):
         raise RuntimeError("verify_pulse_convention() failed; fix before "
                            "trusting any fidelity or P_succ number.")
@@ -112,11 +115,16 @@ def build_ctx(N, j1, j2):
                      bandwidth=BANDWIDTH, gap_mode=GAP_MODE)
     H_scaled = scale_hamiltonian(H_qk, spec["shift"], spec["W"])
     Hs = H_scaled.to_matrix(sparse=True)
-    if N <= 16:
+    if N <= DENSE_CHECK_MAX_N:
         w = np.linalg.eigvalsh(Hs.toarray())
-        if w[0] < -1e-6 or w[-1] > 1 + 1e-9:
-            print(f"  [warning] scaled spectrum [{w[0]:.2e}, {w[-1]:.6f}] leaves "
-                  f"[0,1]: certification assumption violated.")
+        lo, hi = float(w[0]), float(w[-1])
+    else:                                    # extremal eigenvalues only (no dense 2^N x 2^N)
+        from scipy.sparse.linalg import eigsh
+        lo = float(eigsh(Hs, k=1, which="SA", return_eigenvectors=False)[0])
+        hi = float(eigsh(Hs, k=1, which="LA", return_eigenvectors=False)[0])
+    if lo < -1e-6 or hi > 1 + 1e-9:
+        print(f"  [warning] scaled spectrum [{lo:.2e}, {hi:.6f}] leaves "
+              f"[0,1]: certification assumption violated.")
 
     trial_qc = mps_to_circuit(res["psi0"].arrays, method="approximate",
                               shape="lpr", num_layers=SWEEP_L)
@@ -191,7 +199,15 @@ def choose_floor_design(ctx, eps_total):
     return pick, cands, n_infeasible
 
 
+def no_filter_design():
+    """Identity 'filter' for a trial state that is already exact (gamma = 1)."""
+    return dict(source="none", times=np.array([]), phases=np.array([]), T=0.0,
+                eta_cert=0.0, eta_target=None, x=0.0, leak_budget=None)
+
+
 def make_design(ctx, eps):
+    if ctx["gamma"] >= 1.0 - GAMMA_EXACT_TOL:
+        return no_filter_design(), [], 0
     cands, n_inf, pick = [], 0, None
     if DESIGN == "floor":
         pick, cands, n_inf = choose_floor_design(ctx, eps)
@@ -240,7 +256,16 @@ def make_grid(ctx, des, n):
                 grid_ok=grid_ok, eta=min(cert["eta"], eta_bb))
 
 
+def _require_first_order():
+    if ORDER != 1:
+        raise RuntimeError(
+            f"ORDER={ORDER}: the Trotter error bound (core.trotter.trotter_bounds, "
+            "alpha t^2 / 2k) is first-order only. Set ORDER = 1 or implement the "
+            "matching higher-order commutator bound.")
+
+
 def simulate_point(ctx, g, eps_bound):
+    _require_first_order()
     tg, ph, k = g["tg"], g["ph"], g["k"]
     p_ex, sv_ex = postselected_run_exact(ctx["trial_qc"], tg, ph, ctx["Hs"])
     sv, p = _trotter_run(ctx["H_scaled"], ctx["trial_vec"], tg, ph, k)
@@ -295,6 +320,7 @@ def measured_cost(ctx, pt):
 
 
 def point(ctx, des, n, simulate=True):
+    _require_first_order()
     g = make_grid(ctx, des, n)
     if len(g["k"]) == 0:
         raise ValueError(f"n={n}: all pulses snapped to k=0")
@@ -382,6 +408,15 @@ def f_after(p):
     return p["F_ed"] if np.isfinite(p["F_ed"]) else p["F_dmrg"]
 
 
+def no_filter_info(ctx, N, J2, eps):
+    return dict(N=N, J2=J2, eps=eps, n=0, tg=np.array([]), ph=np.array([]),
+                k=np.array([], dtype=int), ancilla=N, eps_bound=0.0, p_succ_lb=1.0,
+                gamma=ctx["gamma"], H_scaled=ctx["H_scaled"], H_qk=ctx["H_qk"],
+                shift=ctx["spec"]["shift"], W=ctx["spec"]["W"],
+                psi0_ed=ctx["psi0_ed"], psi0_dmrg=ctx["psi0_dmrg"],
+                trial_vec=ctx["trial_vec"], design_source="none")
+
+
 def export_circuits(N=6, J2=0.0, eps=1e-2, which="guaranteed", J1_=None):
     """Return (trial_qc, filter_qc, full_qc, info) for one case.
 
@@ -394,6 +429,13 @@ def export_circuits(N=6, J2=0.0, eps=1e-2, which="guaranteed", J1_=None):
     j1 = J1 if J1_ is None else J1_
     ctx = run_quiet(build_ctx, N, j1, J2)
     des, _, _ = run_quiet(make_design, ctx, eps)
+
+    if des["source"] == "none":          # trial state already exact: empty filter
+        trial_qc = ctx["trial_qc"].copy()
+        filter_qc = QuantumCircuit(N + 1)
+        full_qc = filter_qc.copy()
+        full_qc.compose(trial_qc, qubits=list(range(N)), front=True, inplace=True)
+        return trial_qc, filter_qc, full_qc, no_filter_info(ctx, N, J2, eps)
 
     if which == "guaranteed":
         pt = run_quiet(find_guaranteed, ctx, des, eps)

@@ -3,11 +3,11 @@ study.py -- full scaling study for the cosine-filter pipeline.
 
     from study import StudyConfig, run_study, line_routing, a2a_routing
     cfg = StudyConfig(out_dir="study_v1",
-                      J2_list=(0.0, 0.2411, 0.5),
-                      N_resource=(4, 6, 8, 10, 12, 14, 16),   # circuits built + counted, NOT simulated
+                      J2_list=(0.0, 0.2411, 0.4),
+                      N_resource=(4, 6, 8, 10, 12),   # circuits built + counted, NOT simulated
                       N_ideal=(4, 6, 8, 10, 12),              # noiseless filter runs
                       eps_list=(1e-1, 3e-2, 1e-2, 3e-3, 1e-3),
-                      eps_cases=((6, 0.0), (8, 0.0), (6, 0.5)),
+                      eps_cases=((6, 0.0), (8, 0.0), (6, 0.4)),
                       routing=(a2a_routing(), line_routing()))
     out = run_study(cfg)            # compute (resumable) -> figures -> report.md
     out = run_study(cfg, compute_data=False)   # re-plot / re-report from cached data only
@@ -109,19 +109,19 @@ def line_routing():
 @dataclass
 class StudyConfig:
     out_dir: str = "study"
-    which: str = "empirical"              # design used for experiments A and B
+    which: str = "guaranteed"             # design used for A and B ("empirical" is an oracle: it uses the exact ground state)
     eps_base: float = 1e-2
-    J2_list: Tuple[float, ...] = (0.0, 0.2411, 0.5)
+    J2_list: Tuple[float, ...] = (0.0, 0.2411, 0.4)   # J2=0.5 is the exactly solvable Majumdar-Ghosh point (gamma=1): sanity check only
     J1: Optional[float] = None            # None -> J1 from the notebook namespace
     # A: resource scaling (circuits built and counted only)
-    N_resource: Tuple[int, ...] = (4, 6, 8, 10, 12, 14, 16)
+    N_resource: Tuple[int, ...] = (4, 6, 8, 10, 12)      # N>12 needs a non-ED spectrum source (uncertified)
     # B: ideal runs over N and J2
     N_ideal: Tuple[int, ...] = (4, 6, 8, 10, 12)
     ideal_max_N: int = 14
     # C: ideal runs over epsilon
     eps_list: Tuple[float, ...] = (1e-1, 3e-2, 1e-2, 3e-3, 1e-3)
-    eps_cases: Tuple[Tuple[int, float], ...] = ((6, 0.0), (8, 0.0), (6, 0.5))
-    eps_which: Tuple[str, ...] = ("empirical",)     # add "guaranteed" to compare
+    eps_cases: Tuple[Tuple[int, float], ...] = ((6, 0.0), (8, 0.0), (6, 0.4))
+    eps_which: Tuple[str, ...] = ("guaranteed", "empirical")   # empirical = oracle lower envelope
     # routing / transpile
     routing: Tuple[RoutingSpec, ...] = ()
     optimization_level: int = 2
@@ -196,6 +196,20 @@ class CaseFactory:
         ns, rq = self.ns, self.ns["run_quiet"]
         ctx = self.ctx(N, J2)
         des, _, _ = rq(ns["make_design"], ctx, eps)
+        if des.get("source") == "none":      # gamma = 1: nothing to filter
+            from qiskit import QuantumCircuit
+            trial_qc = ctx["trial_qc"].copy()
+            filter_qc = QuantumCircuit(N + 1)
+            full_qc = filter_qc.copy()
+            full_qc.compose(trial_qc, qubits=list(range(N)), front=True, inplace=True)
+            info = dict(N=N, J2=J2, eps=eps, n=0, tg=np.array([]), ph=np.array([]),
+                        k=np.array([], dtype=int), ancilla=N, eps_bound=0.0,
+                        p_succ_lb=1.0, gamma=ctx["gamma"], H_scaled=ctx["H_scaled"],
+                        H_qk=ctx["H_qk"], shift=ctx["spec"]["shift"], W=ctx["spec"]["W"],
+                        psi0_ed=ctx["psi0_ed"], psi0_dmrg=ctx["psi0_dmrg"],
+                        trial_vec=ctx["trial_vec"], gap_scaled=float(ctx["spec"]["gap"]),
+                        design_source="none")
+            return trial_qc, filter_qc, full_qc, info
         if which == "guaranteed":
             pt = rq(ns["find_guaranteed"], ctx, des, eps)
         else:
@@ -247,7 +261,8 @@ def resource_row(cfg, circ, J2, eps, which, order, build_s):
                shift=float(info["shift"]), gamma=float(info["gamma"]),
                p_succ_lb=float(info["p_succ_lb"]), eps_bound=float(info["eps_bound"]),
                n_terms=int(len(info["H_scaled"]) - 1),
-               gap_scaled=_flt(info.get("gap_scaled")), build_s=build_s)
+               gap_scaled=_flt(info.get("gap_scaled")), build_s=build_s,
+               design_source=info.get("design_source", "filter"))
     row["gap_raw"] = row["gap_scaled"] * W if np.isfinite(row["gap_scaled"]) else NAN
     for part, s in (("trial", "trial"), ("filter_success_path", "filter"),
                     ("full_success_path", "full")):

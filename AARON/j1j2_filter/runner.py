@@ -19,6 +19,18 @@ def run_target(ctx, eps):
     _STEP_CX["cx"] = ctx["step"]["cx"]
     banner(f"N={ctx['N']}  J2={ctx['j2']:g}   TARGET eps = {eps:g}", "=")
     des, cands, n_inf = make_design(ctx, eps)
+    if des["source"] == "none":
+        print(f"\n  gamma = {ctx['gamma']:.12f}: the trial state is already exact; "
+              f"no filter is applied (cost = trial circuit only).")
+        tc = ctx["trial_cost"]
+        return dict(N=ctx["N"], J2=ctx["j2"], eps=eps, design="none",
+                    gap=ctx["gap"], W=ctx["spec"]["W"], gamma=ctx["gamma"],
+                    alpha=ctx["alpha"], x=0.0, T=0.0, m_designed=0, eta_design=0.0,
+                    n_guar=0, nz_guar=0, eps_bound_guar=0.0, p_succ_lb_guar=1.0,
+                    cx_guar=tc["cx"], t_guar=tc["t_count_est"],
+                    n_emp=0, nz_emp=0, cx_emp=tc["cx"], t_emp=tc["t_count_est"],
+                    trial_F=ctx["gamma"], F_after_guar=ctx["gamma"],
+                    F_after_emp=ctx["gamma"])
     if des["source"] == "floor":
         report_candidates(cands, n_inf, next((c for c in cands
                           if c["row"]["eps"] == des["leak_budget"]), None))
