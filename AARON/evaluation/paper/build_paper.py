@@ -16,9 +16,15 @@ def ratio(a, b): return "–" if (a is None or b is None or b == 0) else f"{a / 
 # ---------- load
 eq = {(r["N"], r["J2"], r["eps"]): r for r in J(RES / "exp6_equal_fidelity.json")}
 e7 = {}
-for p in glob.glob(str(RES / "exp7_N*_L1.json")):
+for p in sorted(glob.glob(str(RES / "exp7_N*_L1.json"))):
     d = J(p)
     for r in d["rows"]: e7[(d["N"], d["J2"], r["eps"])] = dict(r, step_cx=d["step_cx"], gamma=d["gamma"])
+for p in sorted(glob.glob(str(RES / "exp7_N*_L1_full.json"))):          # reruns with the full floor-search settings
+    d = J(p)
+    for r in d["rows"]:
+        key = (d["N"], d["J2"], r["eps"]); old = e7.get(key)
+        if old is None or old.get("design") == "builder" or not old.get("protocol") or (r.get("protocol") and r.get("design") != "builder"):
+            e7[key] = dict(r, step_cx=d["step_cx"], gamma=d["gamma"])
 loose = J(RES / "exp7a_looseness.json")
 EPS = (1e-1, 1e-2, 1e-3)
 
@@ -102,7 +108,7 @@ The "empirical" step counts of §5.2 use the exact ground state and are not avai
 2. **Trotter — empirical, Richardson-type.** Run the same circuit family at $n$ and $2n$ and compute $\\delta_n=1-|\\langle\\psi_n|\\psi_{{2n}}\\rangle|^2$; because the error vector scales as $1/n$, the distance to the $n\\to\\infty$ state is $\\approx2\\sqrt{{\\delta_n}}$.
 3. **Accept** the smallest $n$ on a geometric grid with $(\\sqrt{{\\ell(n)}}+2\\sqrt{{\\delta_n}})^2\\le\\varepsilon$ and certified $\\eta<1$.
 
-The exact ground state is used only afterwards, to validate. (On hardware the two-run comparison is replaced by the convergence of an energy or other observable estimated at $n$ and $2n$.) Results ($L=1$ trial, $J_1=1$; † marks rows where the floor design search found no feasible design within the reduced search space used here and the legacy `builder` design was used, so these are not comparable):
+The exact ground state is used only afterwards, to validate. (On hardware the two-run comparison is replaced by the convergence of an energy or other observable estimated at $n$ and $2n$.) Results ($L=1$ trial, $J_1=1$; † marks rows where even the full floor design search found no feasible design and the legacy `builder` design was used, so these are not comparable; rows that were rerun with the full search settings (6 leakage fractions, $m\\in\\{{4,6,8\\}}$) are listed with those results):
 
 {tabB}
 
@@ -115,5 +121,13 @@ md = "\n\n".join((HERE / p).read_text() for p in parts)
 (HERE / "paper.md").write_text(md)
 for out, extra in (("paper.html", ["--mathml", "--embed-resources"]), ("paper.docx", []), ("paper.tex", [])):
     r = subprocess.run(["pandoc", "paper.md", "-s", "--resource-path=.", "-o", out, *extra], cwd=HERE, capture_output=True, text=True)
+    if r.returncode: print(out, r.stderr[-300:])
+
+# ---------- presentation overview
+ov = (HERE / "overview_template.md").read_text()
+ov = ov.replace("{{TABLE_A}}", tabA).replace("{{TABLE_B}}", tabB).replace("{{TABLE_C}}", tabC)
+(HERE.parent / "PIPELINE_OVERVIEW.md").write_text(ov)
+for out, extra in (("PIPELINE_OVERVIEW.html", ["--mathml", "--embed-resources"]), ("PIPELINE_OVERVIEW.docx", [])):
+    r = subprocess.run(["pandoc", "PIPELINE_OVERVIEW.md", "-s", f"--resource-path={HERE}", "-o", out, *extra], cwd=HERE.parent, capture_output=True, text=True)
     if r.returncode: print(out, r.stderr[-300:])
 print("built:", len(md), "chars;", len(e7), "empirical rows;", len(eq), "baseline rows")

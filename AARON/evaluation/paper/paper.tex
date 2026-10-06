@@ -903,10 +903,11 @@ hybrid / baseline
 25× \\
 10 & 0.4 & 0.001 & sequential MPS (136) & 6,707,397 & 11,451 & 49319× &
 84× \\
-12 & 0.4 & 0.1 & MPS circuit (33) & 249,852 & -- & 7571× & -- \\
-12 & 0.4 & 0.01 & sequential MPS (174) & 1,943,145 & -- & 11168× & -- \\
-12 & 0.4 & 0.001 & sequential MPS (174) & 17,365,356 & -- & 99801× &
--- \\
+12 & 0.4 & 0.1 & MPS circuit (33) & 249,852 & 1,797 & 7571× & 54× \\
+12 & 0.4 & 0.01 & sequential MPS (174) & 1,943,145 & 5,913 & 11168× &
+34× \\
+12 & 0.4 & 0.001 & sequential MPS (174) & 17,365,356 & 37,665 & 99801× &
+216× \\
 \end{longtable}
 
 The best baseline is an MPS-based circuit with bond dimension
@@ -1019,10 +1020,11 @@ uses only quantities a practitioner can obtain:
 The exact ground state is used only afterwards, to validate. (On
 hardware the two-run comparison is replaced by the convergence of an
 energy or other observable estimated at \(n\) and \(2n\).) Results
-(\(L=1\) trial, \(J_1=1\); † marks rows where the floor design search
-found no feasible design within the reduced search space used here and
-the legacy \texttt{builder} design was used, so these are not
-comparable):
+(\(L=1\) trial, \(J_1=1\); † marks rows where even the full floor design
+search found no feasible design and the legacy \texttt{builder} design
+was used, so these are not comparable; rows that were rerun with the
+full search settings (6 leakage fractions, \(m\in\{4,6,8\}\)) are listed
+with those results):
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 18\tabcolsep) * \real{0.1000}}
@@ -1092,6 +1094,12 @@ certified ÷ protocol (CX)
 981,896 & 292× \\
 10 & 0.4 & 0.001 & 96 & 11,451 & 0.00054 & 0.8 & 73 / 8,714 & 70053 /
 8,336,334 & 728× \\
+12 & 0.4 & 0.1 & 12 & 1,797 & 0.023 & 0.67 & 9 / 1,356 & 1979 / 290,946
+& 162× \\
+12 & 0.4 & 0.01 & 40 & 5,913 & 0.0064 & 0.53 & 35 / 5,178 & 18004 /
+2,646,621 & 448× \\
+12 & 0.4 & 0.001 & 256 & 37,665 & 0.00035 & 0.82 & 122 / 17,967 & 175985
+/ 25,869,828 & 687× \\
 \end{longtable}
 
 The protocol met its target in every completed row, with a safety margin

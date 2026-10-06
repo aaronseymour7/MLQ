@@ -13,7 +13,12 @@ from core.trotter import _trotter_run
 from core.simulate import state_metrics
 
 N, J2 = int(sys.argv[1]), float(sys.argv[2]); L = int(sys.argv[3]) if len(sys.argv) > 3 else 1
-P.SWEEP_L = L; P.FLOOR_EPS_FRACS = [0.2, 0.1, 0.05]; P.FLOOR_M = [4, 6]
+import os
+FULL = os.environ.get("FULL_FLOOR") == "1"       # full floor-search settings (pipeline defaults: 6 leakage fractions, m in {4,6,8})
+EPS_LIST = [float(x) for x in sys.argv[4].split(",")] if len(sys.argv) > 4 else [1e-1, 1e-2, 1e-3]
+P.SWEEP_L = L
+if not FULL:
+    P.FLOOR_EPS_FRACS = [0.2, 0.1, 0.05]; P.FLOOR_M = [4, 6]
 t0 = time.time()
 ctx = P.run_quiet(P.build_ctx, N, 1.0, J2); P._STEP_CX["cx"] = ctx["step"]["cx"]
 GRID = [3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 200, 256, 320, 400, 512, 640, 800, 1024, 1500, 2048]
@@ -27,8 +32,8 @@ def run(des, n):
             sv, p = _trotter_run(ctx["H_scaled"], ctx["trial_vec"], g["tg"], g["ph"], g["k"])
             cache[n] = (g, sv, p)
     return cache[n]
-for eps in (1e-1, 1e-2, 1e-3):
-    row = dict(eps=eps)
+for eps in EPS_LIST:
+    row = dict(eps=eps, full_floor=FULL)
     try:
         cache.clear()
         des, _, _ = P.make_design(ctx, eps)
@@ -64,4 +69,4 @@ for eps in (1e-1, 1e-2, 1e-3):
     out["rows"].append(row)
     print(N, J2, L, {k: v for k, v in row.items()}, flush=True)
 out["time"] = time.time() - t0
-save(f"exp7_N{N}_J2_{J2}_L{L}", out)
+save(f"exp7_N{N}_J2_{J2}_L{L}" + ("_full" if FULL else ""), out)
