@@ -1,0 +1,218 @@
+[
+ {
+  "N": 6,
+  "J2": 0.0,
+  "eps": 0.1,
+  "MPS circuit": 30,
+  "sequential MPS": 63,
+  "generic prep": 57,
+  "filter (certified)": 4000
+ },
+ {
+  "N": 6,
+  "J2": 0.0,
+  "eps": 0.01,
+  "MPS circuit": 90,
+  "sequential MPS": 63,
+  "generic prep": 57,
+  "filter (certified)": 23880
+ },
+ {
+  "N": 6,
+  "J2": 0.0,
+  "eps": 0.001,
+  "MPS circuit": null,
+  "sequential MPS": 63,
+  "generic prep": 57,
+  "filter (certified)": 215260
+ },
+ {
+  "N": 8,
+  "J2": 0.0,
+  "eps": 0.1,
+  "MPS circuit": 63,
+  "sequential MPS": 100,
+  "generic prep": 247,
+  "filter (certified)": 14861
+ },
+ {
+  "N": 8,
+  "J2": 0.0,
+  "eps": 0.01,
+  "MPS circuit": null,
+  "sequential MPS": 100,
+  "generic prep": 247,
+  "filter (certified)": 137998
+ },
+ {
+  "N": 8,
+  "J2": 0.0,
+  "eps": 0.001,
+  "MPS circuit": null,
+  "sequential MPS": 329,
+  "generic prep": 247,
+  "filter (certified)": 1066499
+ },
+ {
+  "N": 10,
+  "J2": 0.0,
+  "eps": 0.1,
+  "MPS circuit": 81,
+  "sequential MPS": 137,
+  "generic prep": 1013,
+  "filter (certified)": 43551
+ },
+ {
+  "N": 10,
+  "J2": 0.0,
+  "eps": 0.01,
+  "MPS circuit": null,
+  "sequential MPS": 137,
+  "generic prep": 1013,
+  "filter (certified)": 447822
+ },
+ {
+  "N": 10,
+  "J2": 0.0,
+  "eps": 0.001,
+  "MPS circuit": null,
+  "sequential MPS": 519,
+  "generic prep": 1013,
+  "filter (certified)": 3802824
+ },
+ {
+  "N": 12,
+  "J2": 0.0,
+  "eps": 0.1,
+  "MPS circuit": 198,
+  "sequential MPS": 174,
+  "generic prep": 4083,
+  "filter (certified)": 125532
+ },
+ {
+  "N": 12,
+  "J2": 0.0,
+  "eps": 0.01,
+  "MPS circuit": null,
+  "sequential MPS": 174,
+  "generic prep": 4083,
+  "filter (certified)": 1292390
+ },
+ {
+  "N": 12,
+  "J2": 0.0,
+  "eps": 0.001,
+  "MPS circuit": null,
+  "sequential MPS": 709,
+  "generic prep": 4083,
+  "filter (certified)": null
+ },
+ {
+  "N": 6,
+  "J2": 0.4,
+  "eps": 0.1,
+  "MPS circuit": 15,
+  "sequential MPS": 15,
+  "generic prep": 57,
+  "filter (certified)": 9117
+ },
+ {
+  "N": 6,
+  "J2": 0.4,
+  "eps": 0.01,
+  "MPS circuit": 30,
+  "sequential MPS": 62,
+  "generic prep": 57,
+  "filter (certified)": 37215
+ },
+ {
+  "N": 6,
+  "J2": 0.4,
+  "eps": 0.001,
+  "MPS circuit": 90,
+  "sequential MPS": 62,
+  "generic prep": 57,
+  "filter (certified)": 285372
+ },
+ {
+  "N": 8,
+  "J2": 0.4,
+  "eps": 0.1,
+  "MPS circuit": 21,
+  "sequential MPS": 21,
+  "generic prep": 247,
+  "filter (certified)": 36554
+ },
+ {
+  "N": 8,
+  "J2": 0.4,
+  "eps": 0.01,
+  "MPS circuit": 84,
+  "sequential MPS": 99,
+  "generic prep": 247,
+  "filter (certified)": 178878
+ },
+ {
+  "N": 8,
+  "J2": 0.4,
+  "eps": 0.001,
+  "MPS circuit": null,
+  "sequential MPS": 99,
+  "generic prep": 247,
+  "filter (certified)": 1828526
+ },
+ {
+  "N": 10,
+  "J2": 0.4,
+  "eps": 0.1,
+  "MPS circuit": 27,
+  "sequential MPS": 27,
+  "generic prep": 1013,
+  "filter (certified)": 100755
+ },
+ {
+  "N": 10,
+  "J2": 0.4,
+  "eps": 0.01,
+  "MPS circuit": 189,
+  "sequential MPS": 136,
+  "generic prep": 1013,
+  "filter (certified)": 823204
+ },
+ {
+  "N": 10,
+  "J2": 0.4,
+  "eps": 0.001,
+  "MPS circuit": null,
+  "sequential MPS": 136,
+  "generic prep": 1013,
+  "filter (certified)": 6707397
+ },
+ {
+  "N": 12,
+  "J2": 0.4,
+  "eps": 0.1,
+  "MPS circuit": 33,
+  "sequential MPS": 33,
+  "generic prep": 4083,
+  "filter (certified)": 249852
+ },
+ {
+  "N": 12,
+  "J2": 0.4,
+  "eps": 0.01,
+  "MPS circuit": null,
+  "sequential MPS": 174,
+  "generic prep": 4083,
+  "filter (certified)": 1943145
+ },
+ {
+  "N": 12,
+  "J2": 0.4,
+  "eps": 0.001,
+  "MPS circuit": null,
+  "sequential MPS": 174,
+  "generic prep": 4083,
+  "filter (certified)": 17365356
+ }
+]

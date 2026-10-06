@@ -27,8 +27,9 @@ for i, J2 in enumerate(J2s):
         ax.set_title(f"$N$={N}, $J_2$={J2:g}", fontsize=8)
         if i == len(J2s) - 1: ax.set_xlabel("CX count")
         if j == 0: ax.set_ylabel("infidelity (floor $10^{-6}$)")
-axs[0][0].legend(fontsize=5.5, frameon=False, loc="lower left")
-fig.tight_layout(); fig.savefig(FIG / "fig6_baselines.png"); plt.close(fig)
+h, l = axs[0][0].get_legend_handles_labels()
+fig.legend(h, l, loc="lower center", ncol=5, frameon=False, fontsize=7)
+fig.tight_layout(rect=(0, 0.05, 1, 1)); fig.savefig(FIG / "fig6_baselines.png"); plt.close(fig)
 
 # equal-fidelity table: min CX reaching infidelity <= eps
 rows = []
