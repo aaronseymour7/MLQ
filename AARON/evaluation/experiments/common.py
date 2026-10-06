@@ -12,6 +12,7 @@ def save(name, obj):
     RES.mkdir(exist_ok=True)
     def conv(o):
         import numpy as np
+        if isinstance(o, (complex, np.complexfloating)): return float(o.real)
         if isinstance(o, (np.floating,)): return float(o)
         if isinstance(o, (np.integer,)): return int(o)
         if isinstance(o, np.ndarray): return o.tolist()
