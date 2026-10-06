@@ -60,9 +60,10 @@ import qiskit
 from qiskit.quantum_info import Statevector
 from qiskit.transpiler import CouplingMap
 
-from builder import (alpha_triangle, apply_filter_pulse, overlaps,
-                     postselected_run, postselected_run_exact, trotter_bounds,
-                     verify_pulse_convention, export_circuits)
+from core.circuits import apply_filter_pulse, verify_pulse_convention
+from core.simulate import overlaps, postselected_run, postselected_run_exact
+from core.trotter import alpha_triangle, trotter_bounds
+from pipeline import export_circuits
 from case_report import Target, _default, _logical_resources, _prep, run_case
 
 NAN = float("nan")
