@@ -14,10 +14,10 @@ Table 5.8 lists, for each target $\varepsilon$, the cheapest baseline that reach
 | 8 | 0 | 0.001 | generic prep (247) | 1,066,499 | 2,765 | 4318× | 11× |
 | 10 | 0 | 0.1 | MPS circuit (81) | 43,551 | 783 | 538× | 9.7× |
 | 10 | 0 | 0.01 | sequential MPS (137) | 447,822 | 1,791 | 3269× | 13× |
-| 10 | 0 | 0.001 | sequential MPS (519) | 3,802,824 | – | 7327× | – |
-| 12 | 0 | 0.1 | sequential MPS (174) | 125,532 | – | 721× | – |
-| 12 | 0 | 0.01 | sequential MPS (174) | 1,292,390 | – | 7428× | – |
-| 12 | 0 | 0.001 | sequential MPS (709) | – | – | – | – |
+| 10 | 0 | 0.001 | sequential MPS (519) | 3,802,824 | 3,051 | 7327× | 5.9× |
+| 12 | 0 | 0.1 | sequential MPS (174) | 125,532 | 1,573 | 721× | 9.0× |
+| 12 | 0 | 0.01 | sequential MPS (174) | 1,292,390 | 2,497 | 7428× | 14× |
+| 12 | 0 | 0.001 | sequential MPS (709) | – | 7,425 | – | 10× |
 | 6 | 0.4 | 0.1 | MPS circuit (15) | 9,117 | 330 | 608× | 22× |
 | 6 | 0.4 | 0.01 | MPS circuit (30) | 37,215 | 645 | 1240× | 22× |
 | 6 | 0.4 | 0.001 | generic prep (57) | 285,372 | 1,779 | 5007× | 31× |
@@ -31,7 +31,7 @@ Table 5.8 lists, for each target $\varepsilon$, the cheapest baseline that reach
 | 12 | 0.4 | 0.01 | sequential MPS (174) | 1,943,145 | 5,913 | 11168× | 34× |
 | 12 | 0.4 | 0.001 | sequential MPS (174) | 17,365,356 | 37,665 | 99801× | 216× |
 
-The best baseline is an MPS-based circuit with bond dimension $\chi\le8$ in nearly every row; generic preparation wins only at the smallest sizes and tightest targets ($N\le8$). The sequential MPS method needs $\chi=4$ for $\varepsilon=10^{-2}$ at every $N=6$–$12$ and its cost grows slowly (63–174 CX); for $J_2=0.4$ the state is nearly a dimer product and $\chi=2$ already gives $\varepsilon\lesssim10^{-1}$ for 15–33 CX. The certified filter is $10^{2}$–$10^{4}\times$ more expensive and the gap *widens* with $N$ (figure 7). The hybrid protocol closes most of the gap but, at these sizes, remains 5–31× above the best baseline (up to 74× in the tightest $J_2=0.4$ row).
+The best baseline is an MPS-based circuit with bond dimension $\chi\le8$ in nearly every row; generic preparation wins only at the smallest sizes and tightest targets ($N\le8$). The sequential MPS method needs $\chi=4$ for $\varepsilon=10^{-2}$ at every $N=6$–$12$ and its cost grows slowly (63–174 CX); for $J_2=0.4$ the state is nearly a dimer product and $\chi=2$ already gives $\varepsilon\lesssim10^{-1}$ for 15–33 CX. The certified filter is $10^{2}$–$10^{4}\times$ more expensive and the gap *widens* with $N$ (figure 7). The hybrid protocol closes most of the gap but, at these sizes, remains 5–216× above the best baseline (median ≈22×; largest at tight $\varepsilon$ and large $N$, where the hybrid step count itself grows).
 
 ![CX at $\varepsilon=10^{-2}$ versus $N$: best baseline, certified filter, hybrid protocol and oracle-empirical filter.](figs/fig7_cx_vs_N.png)
 
@@ -60,7 +60,7 @@ The "empirical" step counts of §5.2 use the exact ground state and are not avai
 2. **Trotter — empirical, Richardson-type.** Run the same circuit family at $n$ and $2n$ and compute $\delta_n=1-|\langle\psi_n|\psi_{2n}\rangle|^2$; because the error vector scales as $1/n$, the distance to the $n\to\infty$ state is $\approx2\sqrt{\delta_n}$.
 3. **Accept** the smallest $n$ on a geometric grid with $(\sqrt{\ell(n)}+2\sqrt{\delta_n})^2\le\varepsilon$ and certified $\eta<1$.
 
-The exact ground state is used only afterwards, to validate. (On hardware the two-run comparison is replaced by the convergence of an energy or other observable estimated at $n$ and $2n$.) Results ($L=1$ trial, $J_1=1$; † marks rows where even the full floor design search found no feasible design and the legacy `builder` design was used, so these are not comparable; rows that were rerun with the full search settings (6 leakage fractions, $m\in\{4,6,8\}$) are listed with those results):
+The exact ground state is used only afterwards, to validate. (On hardware the two-run comparison is replaced by the convergence of an energy or other observable estimated at $n$ and $2n$.) Results ($L=1$ trial, $J_1=1$; rows for $N=10$ ($\varepsilon=10^{-3}$) and $N=12$ ($J_2=0$) were rerun with the full floor-search settings (6 leakage fractions, $m\in\{4,6,8\}$), which found a feasible `floor` design in every case, so no row uses the legacy `builder` fallback; † would mark such a row. The floor search is a heuristic local optimiser, so costs for the same target can differ by tens of percent between search settings (e.g. certified CX at $N=12$, $\varepsilon=10^{-2}$: 1.29M with the reduced search of §5.8 versus 1.67M here)):
 
 | $N$ | $J_2$ | $\varepsilon$ | $n$ (protocol) | CX | measured $1-F$ | $P_{\rm succ}$ | oracle $n$ / CX | certified $n$ / CX | certified ÷ protocol (CX) |
 |---|---|---|---|---|---|---|---|---|---|
@@ -72,7 +72,10 @@ The exact ground state is used only afterwards, to validate. (On hardware the tw
 | 8 | 0 | 0.001 | 56 | 2,765 | 0.00022 | 0.54 | 25 / 1,246 | 32653 / 1,600,018 | 579× |
 | 10 | 0 | 0.1 | 12 | 783 | 0.0064 | 0.44 | 7 / 468 | 1212 / 76,383 | 98× |
 | 10 | 0 | 0.01 | 28 | 1,791 | 0.0013 | 0.51 | 21 / 1,350 | 11060 / 696,807 | 389× |
-| 10 | 0 | 0.001 | – † | – | – | – | 50 / 3,177 | – / – | – |
+| 10 | 0 | 0.001 | 48 | 3,051 | 0.0004 | 0.45 | 36 / 2,295 | 61683 / 3,886,056 | 1274× |
+| 12 | 0 | 0.1 | 20 | 1,573 | 0.0071 | 0.55 | 7 / 572 | 2673 / 205,854 | 131× |
+| 12 | 0 | 0.01 | 32 | 2,497 | 0.0015 | 0.48 | 29 / 2,266 | 21651 / 1,667,160 | 668× |
+| 12 | 0 | 0.001 | 96 | 7,425 | 0.00019 | 0.52 | 44 / 3,421 | 119858 / 9,229,099 | 1243× |
 | 6 | 0.4 | 0.1 | 5 | 330 | 0.014 | 0.91 | 3 / 204 | 177 / 11,166 | 34× |
 | 6 | 0.4 | 0.01 | 10 | 645 | 0.0028 | 0.55 | 6 / 393 | 882 / 55,581 | 86× |
 | 6 | 0.4 | 0.001 | 28 | 1,779 | 0.00053 | 0.49 | 22 / 1,401 | 8323 / 524,364 | 295× |
@@ -86,4 +89,4 @@ The exact ground state is used only afterwards, to validate. (On hardware the tw
 | 12 | 0.4 | 0.01 | 40 | 5,913 | 0.0064 | 0.53 | 35 / 5,178 | 18004 / 2,646,621 | 448× |
 | 12 | 0.4 | 0.001 | 256 | 37,665 | 0.00035 | 0.82 | 122 / 17,967 | 175985 / 25,869,828 | 687× |
 
-The protocol met its target in every completed row, with a safety margin of roughly 2–10× in infidelity, and it needs roughly 30–600× fewer CX than the certified circuits (the larger factors at tighter $\varepsilon$). It is, however, *not rigorous*: step 2 is an extrapolation that assumes the asymptotic $1/n$ regime. The rigorous and the hybrid numbers should be reported side by side, labelled as such.
+The protocol met its target in every completed row, with a safety margin of roughly 1.6–10× in infidelity, and it needs roughly 30–1300× fewer CX than the certified circuits (the larger factors at tighter $\varepsilon$). It is, however, *not rigorous*: step 2 is an extrapolation that assumes the asymptotic $1/n$ regime. The rigorous and the hybrid numbers should be reported side by side, labelled as such.

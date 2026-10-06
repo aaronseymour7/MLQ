@@ -111,24 +111,24 @@ and 2× composition slack. We propose a \textbf{hybrid protocol} ---
 rigorous leakage certificate plus a Richardson-type empirical Trotter
 estimate that does not use the exact ground state --- which met its
 infidelity target in every completed case (\(N=6\)--\(12\)) at roughly
-30--600× lower CX cost than the certified circuits. \textbf{(3) Resource
-comparison.} Against the \texttt{mps-to-circuit} approximate and
-sequential (exact) MPS circuits and generic state preparation, the best
-baseline is cheaper than the certified filter by
-\(10^{2}\)--\(10^{5}\times\) and than the hybrid protocol by 5--74× for
-all \(N\le12\) and \(J_2\in\{0,0.4\}\); MPS preparation needs only a
-bond dimension of 4--8 there, so these systems are too easy for the
-filter to offer an advantage. We therefore frame the contribution as a
-\emph{certified-filtering methodology and verification harness} with an
-honest negative resource result for 1D chains at \(N\le12\), identify
-the regimes (large bond dimension, higher dimension, large \(N\) with
-tensor-network simulation of the filter) in which an advantage could
-still appear, and report the defects found in the reference
-implementation (a \(\gamma=1\) fallback that built million-CX filters
-for exact states, an unguarded first-order assumption, an
-unreachable-memory dense check), all now fixed. The numbers in
-§5.8--5.10 are regenerated from the raw result files as further runs
-complete (\texttt{paper/build\_paper.py}).
+30--1300× lower CX cost than the certified circuits. \textbf{(3)
+Resource comparison.} Against the \texttt{mps-to-circuit} approximate
+and sequential (exact) MPS circuits and generic state preparation, the
+best baseline is cheaper than the certified filter by
+\(10^{2}\)--\(10^{5}\times\) and than the hybrid protocol by 5--216×
+(median ≈22×) for all \(N\le12\) and \(J_2\in\{0,0.4\}\); MPS
+preparation needs only a bond dimension of 4--8 there, so these systems
+are too easy for the filter to offer an advantage. We therefore frame
+the contribution as a \emph{certified-filtering methodology and
+verification harness} with an honest negative resource result for 1D
+chains at \(N\le12\), identify the regimes (large bond dimension, higher
+dimension, large \(N\) with tensor-network simulation of the filter) in
+which an advantage could still appear, and report the defects found in
+the reference implementation (a \(\gamma=1\) fallback that built
+million-CX filters for exact states, an unguarded first-order
+assumption, an unreachable-memory dense check), all now fixed. The
+numbers in §5.8--5.10 are regenerated from the raw result files as
+further runs complete (\texttt{paper/build\_paper.py}).
 
 \hypertarget{introduction}{%
 \subsection{1. Introduction}\label{introduction}}
@@ -887,10 +887,12 @@ hybrid / baseline
 8 & 0 & 0.001 & generic prep (247) & 1,066,499 & 2,765 & 4318× & 11× \\
 10 & 0 & 0.1 & MPS circuit (81) & 43,551 & 783 & 538× & 9.7× \\
 10 & 0 & 0.01 & sequential MPS (137) & 447,822 & 1,791 & 3269× & 13× \\
-10 & 0 & 0.001 & sequential MPS (519) & 3,802,824 & -- & 7327× & -- \\
-12 & 0 & 0.1 & sequential MPS (174) & 125,532 & -- & 721× & -- \\
-12 & 0 & 0.01 & sequential MPS (174) & 1,292,390 & -- & 7428× & -- \\
-12 & 0 & 0.001 & sequential MPS (709) & -- & -- & -- & -- \\
+10 & 0 & 0.001 & sequential MPS (519) & 3,802,824 & 3,051 & 7327× &
+5.9× \\
+12 & 0 & 0.1 & sequential MPS (174) & 125,532 & 1,573 & 721× & 9.0× \\
+12 & 0 & 0.01 & sequential MPS (174) & 1,292,390 & 2,497 & 7428× &
+14× \\
+12 & 0 & 0.001 & sequential MPS (709) & -- & 7,425 & -- & 10× \\
 6 & 0.4 & 0.1 & MPS circuit (15) & 9,117 & 330 & 608× & 22× \\
 6 & 0.4 & 0.01 & MPS circuit (30) & 37,215 & 645 & 1240× & 22× \\
 6 & 0.4 & 0.001 & generic prep (57) & 285,372 & 1,779 & 5007× & 31× \\
@@ -919,8 +921,9 @@ the state is nearly a dimer product and \(\chi=2\) already gives
 \(\varepsilon\lesssim10^{-1}\) for 15--33 CX. The certified filter is
 \(10^{2}\)--\(10^{4}\times\) more expensive and the gap \emph{widens}
 with \(N\) (figure 7). The hybrid protocol closes most of the gap but,
-at these sizes, remains 5--31× above the best baseline (up to 74× in the
-tightest \(J_2=0.4\) row).
+at these sizes, remains 5--216× above the best baseline (median ≈22×;
+largest at tight \(\varepsilon\) and large \(N\), where the hybrid step
+count itself grows).
 
 \begin{figure}
 \centering
@@ -1020,11 +1023,15 @@ uses only quantities a practitioner can obtain:
 The exact ground state is used only afterwards, to validate. (On
 hardware the two-run comparison is replaced by the convergence of an
 energy or other observable estimated at \(n\) and \(2n\).) Results
-(\(L=1\) trial, \(J_1=1\); † marks rows where even the full floor design
-search found no feasible design and the legacy \texttt{builder} design
-was used, so these are not comparable; rows that were rerun with the
-full search settings (6 leakage fractions, \(m\in\{4,6,8\}\)) are listed
-with those results):
+(\(L=1\) trial, \(J_1=1\); rows for \(N=10\) (\(\varepsilon=10^{-3}\))
+and \(N=12\) (\(J_2=0\)) were rerun with the full floor-search settings
+(6 leakage fractions, \(m\in\{4,6,8\}\)), which found a feasible
+\texttt{floor} design in every case, so no row uses the legacy
+\texttt{builder} fallback; † would mark such a row. The floor search is
+a heuristic local optimiser, so costs for the same target can differ by
+tens of percent between search settings (e.g.~certified CX at \(N=12\),
+\(\varepsilon=10^{-2}\): 1.29M with the reduced search of §5.8 versus
+1.67M here)):
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 18\tabcolsep) * \real{0.1000}}
@@ -1077,7 +1084,14 @@ certified ÷ protocol (CX)
 98× \\
 10 & 0 & 0.01 & 28 & 1,791 & 0.0013 & 0.51 & 21 / 1,350 & 11060 /
 696,807 & 389× \\
-10 & 0 & 0.001 & -- † & -- & -- & -- & 50 / 3,177 & -- / -- & -- \\
+10 & 0 & 0.001 & 48 & 3,051 & 0.0004 & 0.45 & 36 / 2,295 & 61683 /
+3,886,056 & 1274× \\
+12 & 0 & 0.1 & 20 & 1,573 & 0.0071 & 0.55 & 7 / 572 & 2673 / 205,854 &
+131× \\
+12 & 0 & 0.01 & 32 & 2,497 & 0.0015 & 0.48 & 29 / 2,266 & 21651 /
+1,667,160 & 668× \\
+12 & 0 & 0.001 & 96 & 7,425 & 0.00019 & 0.52 & 44 / 3,421 & 119858 /
+9,229,099 & 1243× \\
 6 & 0.4 & 0.1 & 5 & 330 & 0.014 & 0.91 & 3 / 204 & 177 / 11,166 & 34× \\
 6 & 0.4 & 0.01 & 10 & 645 & 0.0028 & 0.55 & 6 / 393 & 882 / 55,581 &
 86× \\
@@ -1103,8 +1117,8 @@ certified ÷ protocol (CX)
 \end{longtable}
 
 The protocol met its target in every completed row, with a safety margin
-of roughly 2--10× in infidelity, and it needs roughly 30--600× fewer CX
-than the certified circuits (the larger factors at tighter
+of roughly 1.6--10× in infidelity, and it needs roughly 30--1300× fewer
+CX than the certified circuits (the larger factors at tighter
 \(\varepsilon\)). It is, however, \emph{not rigorous}: step 2 is an
 extrapolation that assumes the asymptotic \(1/n\) regime. The rigorous
 and the hybrid numbers should be reported side by side, labelled as
@@ -1285,7 +1299,7 @@ guarantee is loose by a factor \(\sim10^{2}\)--\(10^{3}\) because the
 commutator constant is a worst case over the whole Hilbert space; the
 slack is quantified (§5.9) and grows with \(N\). (c) A hybrid protocol
 --- rigorous leakage plus a Richardson-type Trotter estimate, with no
-oracle --- met its target in every completed case at 30--600× lower CX
+oracle --- met its target in every completed case at 30--1300× lower CX
 than the certified circuits. (d) DMRG supplies \(E_0\), \(E_1\),
 \(E_{\rm top}\) and the ground state to \(\sim10^{-9}\) up to \(N=16\),
 but cannot certify the gap or \(\gamma\).
@@ -1294,9 +1308,9 @@ but cannot certify the gap or \(\gamma\).
 \(N\le12\) and \(J_2\in\{0,0.4\}\) the filter does not beat
 classical-then-quantum MPS preparation: the best baseline is cheaper
 than the certified filter by \(10^{2}\)--\(10^{5}\times\) and than the
-hybrid protocol by 5--74×, because a bond dimension of 4--8 already
-prepares these states to \(\lesssim10^{-2}\)--\(10^{-5}\) with a few
-hundred CX. The filter's cost is set by the physical gap
+hybrid protocol by 5--216× (median ≈22×), because a bond dimension of
+4--8 already prepares these states to \(\lesssim10^{-2}\)--\(10^{-5}\)
+with a few hundred CX. The filter's cost is set by the physical gap
 (\(T\propto1/\Delta\)) and Trotter error, not by how entangled the state
 is, so its relative merit can only improve for states whose MPS
 preparation cost grows quickly --- which none of the tested ones do.
@@ -1336,11 +1350,12 @@ work).}
   \emph{Competing quantum methods} under the same trial state:
   QETU/Lin--Tong filtering and the rodeo algorithm with random times.
 \item
-  \emph{Completeness of the present data:} the empirical-protocol sweep
-  for \(N=10\)--\(12\) at \(J_2=0.4\) and \(N=12\) at \(J_2=0\),
-  \(\varepsilon=10^{-3}\) rows marked †, and \(L=3\) trial circuits;
-  second-order Trotter; a fault-tolerant resource model with early-abort
-  statistics; and verified references and T-count constants.
+  \emph{Completeness of the present data:} the hybrid protocol for
+  \(L=3\) trial circuits and for \(N>12\) (needs a non-dense
+  simulation); a deterministic, globally better floor-design search (the
+  present one is a multistart local optimiser); second-order Trotter; a
+  fault-tolerant resource model with early-abort statistics; and
+  verified references and T-count constants.
 \end{enumerate}
 
 \hypertarget{reproducibility}{%

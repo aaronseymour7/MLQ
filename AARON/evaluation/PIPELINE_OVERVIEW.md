@@ -5,7 +5,7 @@ subtitle: "J1–J2 Heisenberg chain · Stetcu–Baroni projection · what we bui
 
 # 0. One-paragraph summary
 
-We want the ground state $|E_0\rangle$ of the open spin-½ $J_1$–$J_2$ chain on a quantum computer. **DMRG** (classical) gives a matrix-product state (MPS) that we compile into a shallow circuit; that circuit has ground-state weight $\gamma<1$. We repair it with the **Stetcu–Baroni–Carlson (SBC) projection**: a single ancilla, controlled time evolution, and post-selection implement a *filter* $F(E)=\prod_i\cos(Et_i+\phi_i)$ that suppresses excited states. We optimise the filter classically, **certify** how well it suppresses the spectrum, and control the Trotter error three ways (*certified*, *hybrid*, *oracle*). Result: the mathematics is sound and verified, the rigorous guarantee is $10^2$–$10^3\times$ more conservative than reality, a *hybrid* protocol recovers most of that gap — but for $N\le12$ an MPS-based circuit is still 5–74× cheaper than the filter, so **no resource advantage on these 1D chains**. The value is the certified-filtering method and its verification harness.
+We want the ground state $|E_0\rangle$ of the open spin-½ $J_1$–$J_2$ chain on a quantum computer. **DMRG** (classical) gives a matrix-product state (MPS) that we compile into a shallow circuit; that circuit has ground-state weight $\gamma<1$. We repair it with the **Stetcu–Baroni–Carlson (SBC) projection**: a single ancilla, controlled time evolution, and post-selection implement a *filter* $F(E)=\prod_i\cos(Et_i+\phi_i)$ that suppresses excited states. We optimise the filter classically, **certify** how well it suppresses the spectrum, and control the Trotter error three ways (*certified*, *hybrid*, *oracle*). Result: the mathematics is sound and verified, the rigorous guarantee is $10^2$–$10^3\times$ more conservative than reality, a *hybrid* protocol recovers most of that gap — but for $N\le12$ an MPS-based circuit is still 5–216× (median ≈22×) cheaper than the filter, so **no resource advantage on these 1D chains**. The value is the certified-filtering method and its verification harness.
 
 ![Pipeline](figs/fig0_pipeline.png){width=100%}
 
@@ -54,7 +54,7 @@ $$F(E)=\prod_{i=1}^{m}\cos(Et_i+\phi_i)\quad\text{to the trial state},\qquad P_{
 
 | Symbol | Meaning |
 |---|---|
-| $m$ | number of pulses (4–11 in practice) |
+| $m$ | number of pulses (4–6 in the floor designs) |
 | $t_i,\ \phi_i$ | pulse duration and phase (optimised) |
 | $T=\sum t_i$ | total scaled evolution time; $x=T\Delta/\pi$ is its natural dimensionless form |
 | $\eta$ | $\sup_{E\in[\Delta,1]}|F(E)|\,/\,|F(0)|$ — *how strongly excited states are suppressed relative to the ground state* (smaller is better) |
@@ -144,7 +144,10 @@ At $N=6,\ \varepsilon=10^{-2}$: certified $n=1450$ vs oracle $n=5$ (290×); meas
 | 8 | 0 | 0.001 | 56 | 2,765 | 0.00022 | 0.54 | 25 / 1,246 | 32653 / 1,600,018 | 579× |
 | 10 | 0 | 0.1 | 12 | 783 | 0.0064 | 0.44 | 7 / 468 | 1212 / 76,383 | 98× |
 | 10 | 0 | 0.01 | 28 | 1,791 | 0.0013 | 0.51 | 21 / 1,350 | 11060 / 696,807 | 389× |
-| 10 | 0 | 0.001 | – † | – | – | – | 50 / 3,177 | – / – | – |
+| 10 | 0 | 0.001 | 48 | 3,051 | 0.0004 | 0.45 | 36 / 2,295 | 61683 / 3,886,056 | 1274× |
+| 12 | 0 | 0.1 | 20 | 1,573 | 0.0071 | 0.55 | 7 / 572 | 2673 / 205,854 | 131× |
+| 12 | 0 | 0.01 | 32 | 2,497 | 0.0015 | 0.48 | 29 / 2,266 | 21651 / 1,667,160 | 668× |
+| 12 | 0 | 0.001 | 96 | 7,425 | 0.00019 | 0.52 | 44 / 3,421 | 119858 / 9,229,099 | 1243× |
 | 6 | 0.4 | 0.1 | 5 | 330 | 0.014 | 0.91 | 3 / 204 | 177 / 11,166 | 34× |
 | 6 | 0.4 | 0.01 | 10 | 645 | 0.0028 | 0.55 | 6 / 393 | 882 / 55,581 | 86× |
 | 6 | 0.4 | 0.001 | 28 | 1,779 | 0.00053 | 0.49 | 22 / 1,401 | 8323 / 524,364 | 295× |
@@ -172,10 +175,10 @@ At $N=6,\ \varepsilon=10^{-2}$: certified $n=1450$ vs oracle $n=5$ (290×); meas
 | 8 | 0 | 0.001 | generic prep (247) | 1,066,499 | 2,765 | 4318× | 11× |
 | 10 | 0 | 0.1 | MPS circuit (81) | 43,551 | 783 | 538× | 9.7× |
 | 10 | 0 | 0.01 | sequential MPS (137) | 447,822 | 1,791 | 3269× | 13× |
-| 10 | 0 | 0.001 | sequential MPS (519) | 3,802,824 | – | 7327× | – |
-| 12 | 0 | 0.1 | sequential MPS (174) | 125,532 | – | 721× | – |
-| 12 | 0 | 0.01 | sequential MPS (174) | 1,292,390 | – | 7428× | – |
-| 12 | 0 | 0.001 | sequential MPS (709) | – | – | – | – |
+| 10 | 0 | 0.001 | sequential MPS (519) | 3,802,824 | 3,051 | 7327× | 5.9× |
+| 12 | 0 | 0.1 | sequential MPS (174) | 125,532 | 1,573 | 721× | 9.0× |
+| 12 | 0 | 0.01 | sequential MPS (174) | 1,292,390 | 2,497 | 7428× | 14× |
+| 12 | 0 | 0.001 | sequential MPS (709) | – | 7,425 | – | 10× |
 | 6 | 0.4 | 0.1 | MPS circuit (15) | 9,117 | 330 | 608× | 22× |
 | 6 | 0.4 | 0.01 | MPS circuit (30) | 37,215 | 645 | 1240× | 22× |
 | 6 | 0.4 | 0.001 | generic prep (57) | 285,372 | 1,779 | 5007× | 31× |
@@ -206,7 +209,7 @@ Fixed: $\gamma=1$ now means *no filter* (previously a million-CX filter was buil
 3. **Certified error analysis** — R1 (suppression), R2 (leakage), R3 (Trotter), composition (+ our sharpening).
 4. **Verification** — every ingredient tested against brute force; zero violations.
 5. **Why the guarantee is loose** — table of §4.2; ground state feels 28–41× less Trotter error.
-6. **Hybrid protocol** — definition, validation, 30–600× fewer CX than certified.
+6. **Hybrid protocol** — definition, validation, 30–1300× fewer CX than certified.
 7. **Baselines** — equal-fidelity comparison; MPS preparation wins for $N\le12$.
 8. **Takeaways & next steps** — methodology + harness; where an advantage might exist (large $\chi$, 2D, large $N$ with tensor-network simulation of the filter); certified gap bound for large $N$.
 

@@ -88,7 +88,7 @@ Table 5.8 lists, for each target $\\varepsilon$, the cheapest baseline that reac
 
 {tabA}
 
-The best baseline is an MPS-based circuit with bond dimension $\\chi\\le8$ in nearly every row; generic preparation wins only at the smallest sizes and tightest targets ($N\\le8$). The sequential MPS method needs $\\chi=4$ for $\\varepsilon=10^{{-2}}$ at every $N=6$–$12$ and its cost grows slowly (63–174 CX); for $J_2=0.4$ the state is nearly a dimer product and $\\chi=2$ already gives $\\varepsilon\\lesssim10^{{-1}}$ for 15–33 CX. The certified filter is $10^{{2}}$–$10^{{4}}\\times$ more expensive and the gap *widens* with $N$ (figure 7). The hybrid protocol closes most of the gap but, at these sizes, remains 5–31× above the best baseline (up to 74× in the tightest $J_2=0.4$ row).
+The best baseline is an MPS-based circuit with bond dimension $\\chi\\le8$ in nearly every row; generic preparation wins only at the smallest sizes and tightest targets ($N\\le8$). The sequential MPS method needs $\\chi=4$ for $\\varepsilon=10^{{-2}}$ at every $N=6$–$12$ and its cost grows slowly (63–174 CX); for $J_2=0.4$ the state is nearly a dimer product and $\\chi=2$ already gives $\\varepsilon\\lesssim10^{{-1}}$ for 15–33 CX. The certified filter is $10^{{2}}$–$10^{{4}}\\times$ more expensive and the gap *widens* with $N$ (figure 7). The hybrid protocol closes most of the gap but, at these sizes, remains 5–216× above the best baseline (median ≈22×; largest at tight $\\varepsilon$ and large $N$, where the hybrid step count itself grows).
 
 ![CX at $\\varepsilon=10^{{-2}}$ versus $N$: best baseline, certified filter, hybrid protocol and oracle-empirical filter.](figs/fig7_cx_vs_N.png)
 
@@ -108,11 +108,11 @@ The "empirical" step counts of §5.2 use the exact ground state and are not avai
 2. **Trotter — empirical, Richardson-type.** Run the same circuit family at $n$ and $2n$ and compute $\\delta_n=1-|\\langle\\psi_n|\\psi_{{2n}}\\rangle|^2$; because the error vector scales as $1/n$, the distance to the $n\\to\\infty$ state is $\\approx2\\sqrt{{\\delta_n}}$.
 3. **Accept** the smallest $n$ on a geometric grid with $(\\sqrt{{\\ell(n)}}+2\\sqrt{{\\delta_n}})^2\\le\\varepsilon$ and certified $\\eta<1$.
 
-The exact ground state is used only afterwards, to validate. (On hardware the two-run comparison is replaced by the convergence of an energy or other observable estimated at $n$ and $2n$.) Results ($L=1$ trial, $J_1=1$; † marks rows where even the full floor design search found no feasible design and the legacy `builder` design was used, so these are not comparable; rows that were rerun with the full search settings (6 leakage fractions, $m\\in\\{{4,6,8\\}}$) are listed with those results):
+The exact ground state is used only afterwards, to validate. (On hardware the two-run comparison is replaced by the convergence of an energy or other observable estimated at $n$ and $2n$.) Results ($L=1$ trial, $J_1=1$; rows for $N=10$ ($\\varepsilon=10^{{-3}}$) and $N=12$ ($J_2=0$) were rerun with the full floor-search settings (6 leakage fractions, $m\\in\\{{4,6,8\\}}$), which found a feasible `floor` design in every case, so no row uses the legacy `builder` fallback; † would mark such a row. The floor search is a heuristic local optimiser, so costs for the same target can differ by tens of percent between search settings (e.g. certified CX at $N=12$, $\\varepsilon=10^{{-2}}$: 1.29M with the reduced search of §5.8 versus 1.67M here)):
 
 {tabB}
 
-The protocol met its target in every completed row, with a safety margin of roughly 2–10× in infidelity, and it needs roughly 30–600× fewer CX than the certified circuits (the larger factors at tighter $\\varepsilon$). It is, however, *not rigorous*: step 2 is an extrapolation that assumes the asymptotic $1/n$ regime. The rigorous and the hybrid numbers should be reported side by side, labelled as such.
+The protocol met its target in every completed row, with a safety margin of roughly 1.6–10× in infidelity, and it needs roughly 30–1300× fewer CX than the certified circuits (the larger factors at tighter $\\varepsilon$). It is, however, *not rigorous*: step 2 is an extrapolation that assumes the asymptotic $1/n$ regime. The rigorous and the hybrid numbers should be reported side by side, labelled as such.
 """
 (HERE / "05_generated.md").write_text(gen)
 

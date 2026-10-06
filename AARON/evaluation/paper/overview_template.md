@@ -5,7 +5,7 @@ subtitle: "J1–J2 Heisenberg chain · Stetcu–Baroni projection · what we bui
 
 # 0. One-paragraph summary
 
-We want the ground state $|E_0\rangle$ of the open spin-½ $J_1$–$J_2$ chain on a quantum computer. **DMRG** (classical) gives a matrix-product state (MPS) that we compile into a shallow circuit; that circuit has ground-state weight $\gamma<1$. We repair it with the **Stetcu–Baroni–Carlson (SBC) projection**: a single ancilla, controlled time evolution, and post-selection implement a *filter* $F(E)=\prod_i\cos(Et_i+\phi_i)$ that suppresses excited states. We optimise the filter classically, **certify** how well it suppresses the spectrum, and control the Trotter error three ways (*certified*, *hybrid*, *oracle*). Result: the mathematics is sound and verified, the rigorous guarantee is $10^2$–$10^3\times$ more conservative than reality, a *hybrid* protocol recovers most of that gap — but for $N\le12$ an MPS-based circuit is still 5–74× cheaper than the filter, so **no resource advantage on these 1D chains**. The value is the certified-filtering method and its verification harness.
+We want the ground state $|E_0\rangle$ of the open spin-½ $J_1$–$J_2$ chain on a quantum computer. **DMRG** (classical) gives a matrix-product state (MPS) that we compile into a shallow circuit; that circuit has ground-state weight $\gamma<1$. We repair it with the **Stetcu–Baroni–Carlson (SBC) projection**: a single ancilla, controlled time evolution, and post-selection implement a *filter* $F(E)=\prod_i\cos(Et_i+\phi_i)$ that suppresses excited states. We optimise the filter classically, **certify** how well it suppresses the spectrum, and control the Trotter error three ways (*certified*, *hybrid*, *oracle*). Result: the mathematics is sound and verified, the rigorous guarantee is $10^2$–$10^3\times$ more conservative than reality, a *hybrid* protocol recovers most of that gap — but for $N\le12$ an MPS-based circuit is still 5–216× (median ≈22×) cheaper than the filter, so **no resource advantage on these 1D chains**. The value is the certified-filtering method and its verification harness.
 
 ![Pipeline](figs/fig0_pipeline.png){width=100%}
 
@@ -150,7 +150,7 @@ Fixed: $\gamma=1$ now means *no filter* (previously a million-CX filter was buil
 3. **Certified error analysis** — R1 (suppression), R2 (leakage), R3 (Trotter), composition (+ our sharpening).
 4. **Verification** — every ingredient tested against brute force; zero violations.
 5. **Why the guarantee is loose** — table of §4.2; ground state feels 28–41× less Trotter error.
-6. **Hybrid protocol** — definition, validation, 30–600× fewer CX than certified.
+6. **Hybrid protocol** — definition, validation, 30–1300× fewer CX than certified.
 7. **Baselines** — equal-fidelity comparison; MPS preparation wins for $N\le12$.
 8. **Takeaways & next steps** — methodology + harness; where an advantage might exist (large $\chi$, 2D, large $N$ with tensor-network simulation of the filter); certified gap bound for large $N$.
 
