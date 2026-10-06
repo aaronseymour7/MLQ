@@ -16,3 +16,12 @@ exact state-prep CX 247 rz_nc 629
 10 0.0 L 7 1-F=5.623e-02 CX 189 rz 1156
 10 0.0 L 8 1-F=5.838e-02 CX 216 rz 1318
 exact state-prep CX 1013 rz_nc 2548
+12 0.0 L 1 1-F=2.829e-01 CX 33 rz 211
+12 0.0 L 2 1-F=1.541e-01 CX 66 rz 410
+12 0.0 L 3 1-F=1.834e-01 CX 99 rz 612
+12 0.0 L 4 1-F=1.262e-01 CX 132 rz 812
+12 0.0 L 5 1-F=1.242e-01 CX 165 rz 1009
+12 0.0 L 6 1-F=1.154e-01 CX 198 rz 1211
+12 0.0 L 7 1-F=1.019e-01 CX 231 rz 1403
+12 0.0 L 8 1-F=1.206e-01 CX 264 rz 1605
+exact state-prep CX 4083 rz_nc 10207
