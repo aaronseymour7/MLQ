@@ -1,8 +1,0 @@
-10 0.0 1 {'eps': 0.1, 'design': 'floor', 'protocol': {'n': 12, 'est': 0.07143448072440257, 'leak_cert': 0.0165245772197609, 'delta': 0.004811110632464977, 'eta': 0.24133564825393244, 'actual': 0.006376032036944812, 'p_succ': 0.4413916596653688, 'cx': 783, 'cx_filter': 756, 'rz_nc': 1171, 'exp_cx': 1773.9347422051742, 'k': [1, 2, 3, 6]}, 'oracle': {'n': 7, 'actual': 0.012477688801621922, 'eta': 1.0010910269110371, 'cx': 468}, 'guaranteed': {'n': 1212, 'cx': 76383, 'eps_bound': np.float64(0.09455223632737218)}}
-10 0.0 1 {'eps': 0.01, 'design': 'floor', 'protocol': {'n': 28, 'est': 0.008877986025680577, 'leak_cert': 0.002482636746051278, 'delta': 0.000492773409500824, 'eta': 0.09288261033034519, 'actual': 0.0013292723584099608, 'p_succ': 0.5122609168238962, 'cx': 1791, 'cx_filter': 1764, 'rz_nc': 2501, 'exp_cx': 3496.265167181797, 'k': [1, 2, 2, 5, 7, 11]}, 'oracle': {'n': 21, 'actual': 0.0019176923875543483, 'eta': 0.12819551695464265, 'cx': 1350}, 'guaranteed': {'n': 11060, 'cx': 696807, 'eps_bound': np.float64(0.0093562757876724)}}
-  [warning] no feasible floor design; falling back to builder
-[reopt_phases] warning: Iteration limit reached
-[reopt_phases] warning: Iteration limit reached
-[reopt_phases] warning: Iteration limit reached
-[reopt_phases] warning: Iteration limit reached
-10 0.0 1 {'eps': 0.001, 'design': 'builder', 'protocol': None, 'oracle': {'n': 50, 'actual': 0.0006022828852924045, 'eta': np.float64(0.12031571088278487), 'cx': 3177}}
